@@ -60,30 +60,35 @@ export async function listQGHubContent() {
   return rawPrisma.qGHubContent.findMany({ orderBy: { updatedAt: "desc" } });
 }
 
-// ─────────────────────────────────────────────────────────────────────────
 // Q&G Hub content — the ONLY write path. The client-facing read side lives
 // in src/server/content/qg-hub.ts (published-only for non-admins). A
 // non-BNCL_ADMIN must never be able to create/edit/publish content, even
-// via a direct call to these functions — enforced below by assertBnclAdmin,
-// not by hiding a button in the UI. See BUILD_CHECKLIST.md Phase 3.
+// via a direct call to these functions — enforced below, not by hiding a
+// button in the UI. See BUILD_CHECKLIST.md Phases 3 and 7.
+//
+// create/update take `session` explicitly (rather than calling
+// requireBnclAdmin() internally, which would pull from the live NextAuth
+// request context) so the RBAC gate is directly unit-testable without
+// mocking a request — see tests/phase3-free-tier.test.ts. publish/
+// unpublish/delete were added in Phase 7 and follow the same internal
+// requireBnclAdmin() pattern as listOrgsForSuperAdmin/listQGHubContent
+// above, since Phase 7's server actions call them straight from a request
+// context and don't have a session object already in hand.
 // ─────────────────────────────────────────────────────────────────────────
 
 const qgHubContentInputSchema = z.object({
-  title: z.string().min(1),
-  category: z.string().min(1),
+  title: z.string().trim().min(1).max(300),
+  category: z.string().trim().min(1).max(200),
   contentType: z.enum(["ARTICLE", "LESSON"]),
   publishStatus: z.enum(["DRAFT", "PUBLISHED"]).default("DRAFT"),
-  body: z.string().optional(),
+  body: z.string().max(50_000).optional(),
 });
 
 export type QGHubContentInput = z.infer<typeof qgHubContentInputSchema>;
 
 /**
- * Create Q&G Hub content. Takes `session` explicitly (rather than calling
- * requireBnclAdmin() internally, which would pull from the live NextAuth
- * request context) so the RBAC gate is directly unit-testable without
- * mocking a request — see tests/phase3-free-tier.test.ts, and the same
- * pattern as assertBnclAdmin() above.
+ * Create Q&G Hub content. Takes `session` explicitly — see file header
+ * comment above.
  */
 export async function createQGHubContent(session: SessionUser, input: QGHubContentInput) {
   assertBnclAdmin(session);
@@ -100,4 +105,19 @@ export async function updateQGHubContent(
   assertBnclAdmin(session);
   const data = qgHubContentInputSchema.partial().parse(input);
   return rawPrisma.qGHubContent.update({ where: { id }, data });
+}
+
+export async function publishQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.update({ where: { id }, data: { publishStatus: "PUBLISHED" } });
+}
+
+export async function unpublishQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.update({ where: { id }, data: { publishStatus: "DRAFT" } });
+}
+
+export async function deleteQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.delete({ where: { id } });
 }
