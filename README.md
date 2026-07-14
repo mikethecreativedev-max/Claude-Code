@@ -7,15 +7,25 @@ hospitals), built around CQC Regulation 17. Full concept and build spec:
 
 ## Status
 
-**Phase 1 (Foundation) complete and verified** — see `BUILD_CHECKLIST.md` for
-the full phase-by-phase plan and real verification output (migrations from
-scratch, seed, the 14-test cross-tenant isolation suite, live RBAC nav
-checks across three roles, and an end-to-end magic-link login). Phases 2–7
-are not yet built.
+**Phase 1 (Foundation) complete and verified.** **Phase 5 (Supporting
+Modules) also complete and verified**, ahead of Phases 2–4 and 6–7 in this
+worktree — see `BUILD_CHECKLIST.md` for the full phase-by-phase plan and
+real verification output (migrations from scratch, seed, the combined
+26-test tenant-isolation suite spanning Phase 1 + Phase 5 models, live RBAC
+nav checks, an end-to-end magic-link login, and a live curl smoke test of
+notice posting/acknowledgement and the unified calendar). Phases 2–4 and
+6–7 are not yet built — the Phase 5 Calendar module reads whatever
+`CalendarTask` rows exist without hard-depending on Phase 4 (Audits/Policy
+reviews) having landed.
 
 What exists: auth (Credentials + magic link), the scoped data-access layer,
-RBAC permission checks, the BNCL super-admin module, base nav/layout, and
-the automated tenant-isolation test suite and import-discipline check.
+RBAC permission checks, the BNCL super-admin module, base nav/layout, the
+automated tenant-isolation test suite and import-discipline check, and the
+six Phase 5 modules — Feedback & Complaints, Staff Training (with
+expiry-derived status feeding the Calendar), Notices (with audience
+targeting and acknowledgement tracking), Events (minimal generic log —
+see "Known open item" below), a unified Calendar, and Notifications
+(distinct from Notices).
 
 ## Tech stack
 
@@ -69,6 +79,25 @@ referrals, significant events short of a full incident), or (b) a broader
 catch-all that Incidents would sit inside. Until product/client confirmation
 arrives, `Event` is built as a minimal generic log (Phase 5) and must not be
 merged into or made a subtype of `Incident`, or vice versa.
+
+**Phase 5 update:** the minimal generic log described above is now built —
+`src/server/modules/events.ts`, `/api/events*`, `/dashboard/events*` — and
+deliberately does not go beyond it: `eventType` is free text with UI
+suggestions (`SUGGESTED_EVENT_TYPES`, not an enum), plus title, description,
+date/time, status, Reg 17 tagging, and attachments (see the next paragraph).
+This still does not resolve the open question above — it remains a generic
+log, not a decision about which of (a)/(b) is correct, and `Incident`
+(not built in this worktree — Phase 4) must still not be merged with it
+when that phase lands.
+
+Event attachments have a real file-upload path in this phase
+(`src/server/storage/local-upload.ts`), writing to a local, gitignored
+`.uploads/` directory, since no S3-compatible client is configured in this
+environment and Events needed something real to exercise rather than a
+metadata-only stub. The `/api/events/[id]/attachments` JSON route still
+accepts pre-computed metadata directly (`s3Key`/`fileName`/etc.) for
+programmatic callers; swapping `local-upload.ts` for a real S3 client later
+is a drop-in change once Phase 4 configures one.
 
 ## Setup
 

@@ -17,6 +17,18 @@ export function Nav({ items, userLabel }: { items: NavItem[]; userLabel: string 
             </Link>
           </li>
         ))}
+        {/* Notifications has no RolePermission row — it's a personal inbox,
+            not an RBAC-gated governance module (see
+            src/server/modules/notifications.ts) — so it isn't part of
+            NAV_ITEMS above and is available to every authenticated user. */}
+        <li>
+          <Link
+            href="/dashboard/notifications"
+            className="block rounded-md px-3 py-2 text-sm text-slate-700 hover:bg-slate-100"
+          >
+            Notifications
+          </Link>
+        </li>
       </ul>
       <div className="border-t border-slate-200 pt-4 text-xs text-slate-500">{userLabel}</div>
     </nav>
