@@ -263,14 +263,66 @@ async function seedDemoOrg(opts: {
     },
   });
 
+  // Realistic RiskEntry/Policy fixtures per demo org — required by
+  // BUILD_CHECKLIST.md Phase 4's gate ("seed data now includes realistic
+  // ... RiskEntries/Policies for both demo orgs") and is what gives the
+  // cross-tenant isolation suite real per-org data to fail against for
+  // these two models specifically.
+  const riskEntry = await prisma.riskEntry.upsert({
+    where: { id: `${opts.id}-risk-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-risk-1`,
+      orgId: org.id,
+      siteId: site.id,
+      title: "Unlabelled sharps bin nearing capacity",
+      description:
+        "Sharps bin in Treatment Room 2 observed at ~80% fill without a replacement on order.",
+      likelihood: 3,
+      impact: 4,
+      riskRating: 3 * 4,
+      ownerId: manager.id,
+      mitigationActions: [
+        {
+          description: "Order replacement sharps bin and schedule swap.",
+          ownerId: staff.id,
+          dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "OPEN",
+          completedDate: null,
+        },
+      ],
+      reviewDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      status: "OPEN",
+      versionNumber: 1,
+      isCurrentVersion: true,
+    },
+  });
+
+  const policy = await prisma.policy.upsert({
+    where: { id: `${opts.id}-policy-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-policy-1`,
+      orgId: org.id,
+      siteId: site.id,
+      title: "Infection Prevention & Control Policy",
+      reviewDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      status: "ACTIVE",
+      versionNumber: 1,
+      isCurrentVersion: true,
+    },
+  });
+
   // A handful of AuditLogEntry rows so the Phase 2 dashboard's recent
   // activity feed has something real to show for the seeded demo orgs
   // (not just brand-new sign-ups). Mirrors the shape scopedDb() itself
   // would produce for these actions.
-  const activityLog: { entityType: "SITE" | "AUDIT" | "INCIDENT"; entityId: string; userId: string; action: "CREATE"; afterSnapshot: object }[] = [
+  const activityLog: { entityType: "SITE" | "AUDIT" | "INCIDENT" | "RISK_ENTRY" | "POLICY"; entityId: string; userId: string; action: "CREATE"; afterSnapshot: object }[] = [
     { entityType: "SITE", entityId: site.id, userId: owner.id, action: "CREATE", afterSnapshot: { name: site.name } },
     { entityType: "AUDIT", entityId: audit.id, userId: manager.id, action: "CREATE", afterSnapshot: { type: audit.type, status: audit.status } },
     { entityType: "INCIDENT", entityId: incident.id, userId: staff.id, action: "CREATE", afterSnapshot: { status: incident.status } },
+    { entityType: "RISK_ENTRY", entityId: riskEntry.id, userId: manager.id, action: "CREATE", afterSnapshot: { title: riskEntry.title, riskRating: riskEntry.riskRating } },
+    { entityType: "POLICY", entityId: policy.id, userId: owner.id, action: "CREATE", afterSnapshot: { title: policy.title, status: policy.status } },
   ];
   for (const [i, entry] of activityLog.entries()) {
     await prisma.auditLogEntry.upsert({
@@ -280,7 +332,7 @@ async function seedDemoOrg(opts: {
     });
   }
 
-  return { org, site, owner, manager, staff, audit, incident };
+  return { org, site, owner, manager, staff, audit, incident, riskEntry, policy };
 }
 
 async function main() {
