@@ -24,12 +24,18 @@ const SRC = path.join(ROOT, "src");
 //   table seeded once, identical across every org — it carries no orgId
 //   and is not in scoped-client.ts's TENANT_MODELS set, so it is not a
 //   tenant-isolation concern the same way business data is)
+// - the taxonomy reference-data module (RegulatorySubClause,
+//   CQCKeyQuestion, SixPillar — added in Phase 4a/Audits+Incidents — are
+//   likewise global seed/reference tables with no orgId column, per the
+//   same rationale as RolePermission above; see
+//   src/server/taxonomy/reference-data.ts's header comment)
 const ALLOWLIST = [
   path.join(SRC, "server", "db", "prisma.ts"),
   path.join(SRC, "server", "db", "scoped-client.ts"),
   path.join(SRC, "server", "bncl-admin", "client.ts"),
   path.join(SRC, "server", "auth", "auth.ts"),
   path.join(SRC, "server", "rbac", "permissions.ts"),
+  path.join(SRC, "server", "taxonomy", "reference-data.ts"),
 ];
 
 const IMPORT_PATTERN = /from\s+["']@\/server\/db\/prisma["']/;

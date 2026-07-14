@@ -207,22 +207,61 @@ GET /dashboard (same session) -> page content confirms "Signed in as owner@green
 For **each** of Audits, Incidents, Risk Register, Policies:
 
 - [ ] List view (scoped to org/site, paginated).
+  - Audits/Incidents: **done** — `src/app/dashboard/audits/page.tsx`, `src/app/dashboard/incidents/page.tsx` (paginated via `listCurrentAudits`/`listCurrentIncidents`, scoped by `scopedDb`). Risk Register/Policies: pending (built in the sibling `claude/phase4b-risk-policies` worktree).
 - [ ] Create/edit flow that follows the append-only versioning pattern (new row + `supersededById`/`isCurrentVersion` flip, never an UPDATE of business fields) — verified by a test that edits a record twice and asserts three rows exist with a correct version chain, not just that the "current" view shows the latest values.
+  - Audits/Incidents: **done** — `editAudit`/`editIncident` in `src/server/audits/service.ts` / `src/server/incidents/service.ts`. Verified by `tests/phase4a-audits-incidents.test.ts` ("append-only versioning chain" describe block: 2 edits -> 3 rows, correct `versionNumber`/`isCurrentVersion`/`supersededById` on each row, editing a superseded id rejected). Risk Register/Policies: pending.
 - [ ] Embedded follow-up/mitigation actions stored as the `Json` array field on the parent record — verified no separate table/module was created for these.
+  - Audits/Incidents: **done** — `Audit.followUpActions`/`Incident.followUpActions` `Json` columns, validated by `FollowUpActionSchema`/`FollowUpActionsArraySchema` in `src/server/audits/schemas.ts` / `src/server/incidents/schemas.ts`, edited via `src/components/follow-up-actions-editor.tsx`. No separate table exists. Malformed payloads rejected — see the "malformed followUpActions rejected by Zod" describe block in the test suite.
 - [ ] Reg 17 / CQC tagging UI, writing to the polymorphic tag join tables, with the scoped data-access layer verifying `entityId` belongs to the caller's `orgId` before insert (this is the specific integrity gap called out in the schema comments — it must be closed here, not assumed).
+  - Audits/Incidents: **done**, both halves of the gap closed. WRITE-TIME: `assertOwnedEntity`/`verifyOwnedEntity` in `src/server/governance/tagging.ts`, called from every `add*Tag`/`upload*Attachment` path before insert. READ-TIME: `listAuditTags`/`listIncidentTags` re-verify ownership of `entityId` before returning any tag rows, rather than trusting the tag row's own `entityId`. Verified by the "tagging-integrity gap" describe block in `tests/phase4a-audits-incidents.test.ts`, which (a) proves Org A's write attempt against Org B's Audit/Incident is rejected, and (b) inserts a mismatched tag row directly via `rawPrisma` (bypassing `assertOwnedEntity` entirely, simulating a bug elsewhere) and proves the read path still returns nothing for it, in both corruption directions (tag orgId matches the reader but entityId points at the other org's entity, and vice versa).
 - [ ] Attachments (upload to S3-compatible bucket, metadata row in `Attachment`).
+  - Audits/Incidents: **partially done** — metadata row + write/read-time ownership checks done (`src/server/governance/attachments.ts`, `uploadAuditAttachmentAction`/`uploadIncidentAttachmentAction`). Storage backend is a documented local-disk stub (`./uploads/<orgId>/<entityType>/...`), not real S3 — see that file's header comment; real S3 wiring is deferred to Phase 7 infra work per the existing `.env.example` S3_* vars.
 - [ ] Every create/edit/delete/approve action writes an `AuditLogEntry` with real before/after JSON snapshots (verified by inspecting an actual row after a real mutation, not by code inspection alone).
+  - Audits/Incidents: **done** — every mutation in `src/server/audits/service.ts` / `src/server/incidents/service.ts` calls `writeAuditLog` (`src/server/governance/audit-log.ts`). Verified by the "every mutation writes a real AuditLogEntry" describe block (inspects real rows after real `createAudit`/`editAudit`/`voidAudit`/`createIncident`/`closeIncident` calls, asserts non-trivial before/after snapshots) AND by a live smoke test against a running `npm run dev` instance (logged in as a real user, created an Audit via the actual HTML form/server action, edited it, then queried Postgres directly and confirmed the version chain and both the CREATE and UPDATE `AuditLogEntry` rows with populated snapshots).
 - [ ] Risk Register matrix view (likelihood × impact grid), reading `riskRating` computed server-side.
+  - Out of scope for this worktree — Risk Register/Policies are being built in `claude/phase4b-risk-policies`.
   - Acceptance: attempting to submit a client-supplied `riskRating` that doesn't match `likelihood * impact` is ignored/overwritten server-side — verified by a test.
 - [ ] Policy version history + review-date tracker UI.
+  - Out of scope for this worktree — see `claude/phase4b-risk-policies`.
 - [ ] Cross-tenant isolation re-verified for all four modules: Org A cannot read/edit/delete Org B's Audits, Incidents, RiskEntries, or Policies (extend the Phase 1 suite, don't replace it).
+  - Audits/Incidents: **done** — see the "cross-tenant isolation via the Audits/Incidents service layer" describe block in `tests/phase4a-audits-incidents.test.ts` (read/edit/delete all rejected against Org B records, including through the service layer, not just `scopedDb` directly). RiskEntries/Policies: pending, other worktree.
 
 ### Phase 4 gate
 - [ ] Migrations clean from scratch.
+  - Audits/Incidents: verified — `npx prisma migrate deploy` against a freshly created `bncl_dev_phase4a` and `bncl_test_phase4a` applies the single `20260714183643_init` migration cleanly (no schema changes were needed for this phase; the Phase 0 schema already contains the Audit/Incident/tagging models).
 - [ ] Seed works (seed data now includes realistic Audits/Incidents/RiskEntries/Policies for both demo orgs, across both organisations, so the isolation tests have real data to fail against).
+  - Audits/Incidents: verified — `npm run db:seed` seeds one Audit and one Incident per demo org (`prisma/seed.ts`), plus the Reg 17 / CQC / Six Pillar taxonomy reference data. RiskEntries/Policies seed data: pending, other worktree.
 - [ ] Cross-tenant isolation suite, extended to cover all four modules, passes (paste full output).
+  - Audits/Incidents portion done and passing — see verification output below. RiskEntries/Policies: pending, other worktree.
 - [ ] Versioning-chain test passes for all four modules (paste output).
+  - Audits/Incidents portion done and passing — see verification output below. RiskEntries/Policies: pending, other worktree.
 - [ ] All Phase 4 pages render for at least one user per role.
+  - Audits/Incidents: verified — `/dashboard/audits`, `/dashboard/audits/new`, `/dashboard/audits/[id]`, `/dashboard/incidents`, `/dashboard/incidents/new`, `/dashboard/incidents/[id]` all render (confirmed via `npm run build`'s route listing and a live smoke test as an OWNER-role user). Not separately smoke-tested for REGISTERED_MANAGER/STAFF/BNCL_ADMIN in this pass; the RBAC gating itself (`requireModulePermission`) is exercised by `tests/tenant-isolation.test.ts`'s RolePermission-matrix tests. Risk Register/Policies pages: pending, other worktree.
+
+#### Phase 4a (Audits + Incidents) verification output
+
+```
+$ DATABASE_URL=".../bncl_test_phase4a" npx vitest run
+ ✓ tests/tenant-isolation.test.ts (14 tests)
+ ✓ tests/phase4a-audits-incidents.test.ts (26 tests)
+ Test Files  2 passed (2)
+      Tests  40 passed (40)
+
+$ npm run check:tenant-isolation-imports
+OK: no unscoped raw-Prisma imports found outside the allowlist (6 allowlisted files).
+
+$ npm run lint
+✔ No ESLint warnings or errors
+
+$ npm run build
+✓ Compiled successfully
+✓ Generating static pages (11/11)
+```
+
+Live smoke test (`PORT=3012 npm run dev`, real HTTP via curl — NextAuth credentials login as `owner@greenfield-demo.example`, then a real POST through the `/dashboard/audits/new` and `/dashboard/audits/[id]` server-action forms):
+- Created Audit `cmrl9g8fb00018rz0lsxd6pnb` (v1).
+- Edited it -> new row `cmrl9ggk200058rz07tcl05ya` (v2). Verified directly in Postgres: v1 has `isCurrentVersion=false`, `supersededById=<v2 id>`; v2 has `isCurrentVersion=true`, `supersededById=null`, and the submitted `followUpActions` entry persisted correctly.
+- Verified `AuditLogEntry` rows: one `CREATE` on v1 (`afterSnapshot` populated, `beforeSnapshot` null) and one `UPDATE` on v2 (`beforeSnapshot`/`afterSnapshot` both populated with distinct `type` values).
 
 ---
 
