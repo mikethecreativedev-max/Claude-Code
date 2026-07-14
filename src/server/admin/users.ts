@@ -5,6 +5,11 @@ import { scopedDb } from "@/server/db/scoped-client";
 import { requireModulePermission } from "@/server/rbac/permissions";
 import type { SessionUser } from "@/server/auth/session";
 
+// Inviting new users lives in src/server/onboarding/invite.ts (Phase 2) —
+// it's the token-based flow with an accept page, which supersedes the
+// minimal no-token invite this module used to have. This module owns
+// managing *existing* users (role changes, disable/reactivate).
+
 /**
  * User & role management for a client org (/dashboard/admin/users).
  *
@@ -29,14 +34,8 @@ export class SelfDemotionBlockedError extends Error {
   }
 }
 
-const INVITABLE_ROLES = ["OWNER", "REGISTERED_MANAGER", "STAFF"] as const;
-type InvitableRole = (typeof INVITABLE_ROLES)[number];
-
-const inviteUserSchema = z.object({
-  email: z.string().trim().toLowerCase().email(),
-  name: z.string().trim().min(1).max(200),
-  role: z.enum(INVITABLE_ROLES),
-});
+export const INVITABLE_ROLES = ["OWNER", "REGISTERED_MANAGER", "STAFF"] as const;
+export type InvitableRole = (typeof INVITABLE_ROLES)[number];
 
 const changeRoleSchema = z.object({
   userId: z.string().min(1),
@@ -51,8 +50,14 @@ const disableUserSchema = z.object({
  * Requires "edit"; if the target role is OWNER, additionally requires
  * "approve". Throws ForbiddenError (from requireModulePermission) if either
  * check fails.
+ *
+ * Note: src/server/onboarding/invite.ts (Phase 2's invite flow) doesn't
+ * need this — its INVITE_ROLES enum (schemas.ts) only permits inviting
+ * REGISTERED_MANAGER or STAFF in the first place, so granting OWNER via
+ * invite is impossible by construction, not by a runtime permission check.
+ * OWNER can only ever be reached via changeUserRole() below.
  */
-async function requireRoleGrantPermission(role: InvitableRole): Promise<SessionUser> {
+export async function requireRoleGrantPermission(role: InvitableRole): Promise<SessionUser> {
   const session = await requireModulePermission("ADMIN_USERS", "edit");
   if (role === "OWNER") {
     await requireModulePermission("ADMIN_USERS", "approve");
@@ -74,31 +79,6 @@ export async function listUsers() {
     },
     orderBy: { createdAt: "asc" },
   });
-}
-
-/**
- * Minimal invite: creates a User row with status INVITED via scopedDb. No
- * token/email-send flow — that's Phase 2's job (see BUILD_CHECKLIST.md).
- * This just needs the admin-side action to exist and be correctly RBAC'd.
- */
-export async function inviteUser(input: unknown) {
-  const { email, name, role } = inviteUserSchema.parse(input);
-  const session = await requireRoleGrantPermission(role);
-
-  // `data` intentionally omits orgId — scopedDb() injects it at runtime.
-  // See the matching comment in src/server/admin/sites.ts createSite() for
-  // why the `as never` cast is needed here and is consistent with this
-  // codebase's established pattern (scoped-client.ts and
-  // tests/tenant-isolation.test.ts both do the same at their create() call
-  // sites), not a general `any`-style bypass.
-  return scopedDb(session.orgId).user.create({
-    data: {
-      email,
-      name,
-      role: role as UserRole,
-      status: "INVITED",
-    },
-  } as never);
 }
 
 export async function changeUserRole(input: unknown) {

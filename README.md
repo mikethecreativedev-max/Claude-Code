@@ -7,13 +7,20 @@ hospitals), built around CQC Regulation 17. Full concept and build spec:
 
 ## Status
 
-**Phase 1 (Foundation) complete and verified** — see `BUILD_CHECKLIST.md` for
-the full phase-by-phase plan and real verification output (migrations from
-scratch, seed, the 14-test cross-tenant isolation suite, live RBAC nav
-checks across three roles, and an end-to-end magic-link login). Phases 2–7
-are not yet built.
+**Phase 1 (Foundation) and Phase 2 (Onboarding and Dashboard) complete and
+verified** — see `BUILD_CHECKLIST.md` for the full phase-by-phase plan and
+real verification output (migrations from scratch, seed, the combined
+30-test cross-tenant isolation + onboarding/dashboard suite, live RBAC nav
+checks across three roles, and end-to-end curl smoke tests of sign-up,
+setup wizard, invite/accept, and the dashboard). Phases 3–7 are not yet
+built.
 
 What exists: auth (Credentials + magic link), the scoped data-access layer,
+sign-up (Organisation + Owner User + DataProcessingAgreement), the setup
+wizard (org details, sites, registered activities), a role invite flow
+(token-based accept), and a dashboard shell (live counts, a V1-placeholder
+compliance score ring, a module-records donut chart, an AuditLogEntry-driven
+activity feed, and a quick access panel) — on top of Phase 1's
 RBAC permission checks, the BNCL super-admin module, base nav/layout, and
 the automated tenant-isolation test suite and import-discipline check.
 
@@ -69,6 +76,30 @@ referrals, significant events short of a full incident), or (b) a broader
 catch-all that Incidents would sit inside. Until product/client confirmation
 arrives, `Event` is built as a minimal generic log (Phase 5) and must not be
 merged into or made a subtype of `Incident`, or vice versa.
+
+## Compliance score (V1 placeholder)
+
+The dashboard's compliance score ring shows a number computed by
+`computeComplianceScore()` in `src/server/compliance/score.ts` — a pure
+function, unit-tested in `tests/phase2-onboarding-dashboard.test.ts`.
+
+- **Inputs**: plain non-negative counts per org — `totalAudits` /
+  `overdueAudits`, `totalIncidents` / `openIncidents` (status `OPEN` or
+  `INVESTIGATING`), `totalPolicies` / `policiesNeedingReview` (`reviewDate`
+  in the past).
+- **Formula**: a weighted blend of three health ratios, each clamped to
+  `[0, 1]` and defaulting to `1` when the relevant module has zero rows
+  (an org that hasn't started using a module isn't penalised for it):
+  `score = round(100 * (0.40 * auditHealth + 0.35 * incidentHealth + 0.25 * policyHealth))`.
+- **Output**: an integer in `[0, 100]`. Higher is better.
+
+**This is explicitly a V1 placeholder**, not a validated regulatory scoring
+methodology — it is not risk-weighted by incident severity, not aware of
+CQC domain/Reg 17 breakdown, and not informed by inspection history. It
+exists so the dashboard shows a real, data-driven number instead of a
+hardcoded one, and is deliberately isolated as a single pure function with
+one call site (`src/server/dashboard/data.ts`) so it is easy to find and
+replace wholesale once a real methodology is defined.
 
 ## Setup
 

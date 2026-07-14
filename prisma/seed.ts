@@ -263,6 +263,23 @@ async function seedDemoOrg(opts: {
     },
   });
 
+  // A handful of AuditLogEntry rows so the Phase 2 dashboard's recent
+  // activity feed has something real to show for the seeded demo orgs
+  // (not just brand-new sign-ups). Mirrors the shape scopedDb() itself
+  // would produce for these actions.
+  const activityLog: { entityType: "SITE" | "AUDIT" | "INCIDENT"; entityId: string; userId: string; action: "CREATE"; afterSnapshot: object }[] = [
+    { entityType: "SITE", entityId: site.id, userId: owner.id, action: "CREATE", afterSnapshot: { name: site.name } },
+    { entityType: "AUDIT", entityId: audit.id, userId: manager.id, action: "CREATE", afterSnapshot: { type: audit.type, status: audit.status } },
+    { entityType: "INCIDENT", entityId: incident.id, userId: staff.id, action: "CREATE", afterSnapshot: { status: incident.status } },
+  ];
+  for (const [i, entry] of activityLog.entries()) {
+    await prisma.auditLogEntry.upsert({
+      where: { id: `${opts.id}-log-${i + 1}` },
+      update: {},
+      create: { id: `${opts.id}-log-${i + 1}`, orgId: org.id, ...entry },
+    });
+  }
+
   return { org, site, owner, manager, staff, audit, incident };
 }
 

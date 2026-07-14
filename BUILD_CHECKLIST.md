@@ -163,22 +163,62 @@ GET /dashboard (same session) -> page content confirms "Signed in as owner@green
 
 ## Phase 2 — Onboarding and Dashboard
 
-- [ ] Sign-up flow (creates Organisation + first Owner User + DPA acceptance record).
+- [x] Sign-up flow (creates Organisation + first Owner User + DPA acceptance record).
   - Acceptance: a brand-new signup produces a working login without any manual DB intervention, and a `DataProcessingAgreement` row is created at signup.
-- [ ] Setup wizard: org details, site(s), registered activities, service type.
+  - Verified live: `POST /api/signup` (src/app/api/signup/route.ts -> src/server/onboarding/signup.ts) creates the org/owner/DPA in one flow; `src/app/signup/page.tsx` collects input and auto-signs-in via NextAuth Credentials on success. Real curl smoke test (below) signed up, logged in, and reached the dashboard with zero manual DB steps. Unit-tested in `tests/phase2-onboarding-dashboard.test.ts` ("sign-up: creates exactly one org/user/DPA row, no cross-contamination").
+- [x] Setup wizard: org details, site(s), registered activities, service type.
   - Acceptance: wizard output is persisted via the scoped data-access layer only; a fresh org completing the wizard has correct `Site` rows with `registeredActivities` populated.
-- [ ] Role invite screen (invites a User with a role, status `INVITED` until accepted).
+  - Verified: `src/app/dashboard/setup-wizard/page.tsx` -> `POST /api/setup-wizard` -> `src/server/onboarding/setup-wizard.ts`, which writes exclusively through `scopedDb(orgId)`. Service type has no dedicated schema column (schema.prisma unchanged this phase) — by documented convention it is stored as the first element of `registeredActivities`; see the docstring in setup-wizard.ts and this same note. Unit-tested and live curl-verified (below).
+- [x] Role invite screen (invites a User with a role, status `INVITED` until accepted).
   - Acceptance: an invited user can complete signup and lands with the correct role and org — never able to choose or override their own org/role client-side.
-- [ ] Main dashboard shell: live count badges, compliance score ring, stat tiles, donut chart, recent activity feed (driven by `AuditLogEntry`), quick access panel.
+  - Verified: `src/app/dashboard/admin/users/page.tsx` (list + invite form) -> `POST /api/invites` -> `src/server/onboarding/invite.ts`, which creates the User (status INVITED) and a hashed token reusing the NextAuth `VerificationToken` model (documented design-choice comment in invite.ts). `src/app/invite/accept/page.tsx` -> `GET`/`POST /api/invites/accept` resolves org/role purely from the token-identified User row; `acceptInviteSchema` has no org/role field at all, so there is nothing for a client to spoof. Live curl smoke test accepted an invite and confirmed the resulting user kept its assigned org/role even when the accept payload was constructed with spoofed `orgId`/`role` fields (test: "accepting a valid invite activates the user in the inviting org with the assigned role"); single-use token rejection also verified (both in the unit test and live: a second accept attempt on the same token returned "invite link is invalid or has expired").
+- [x] Main dashboard shell: live count badges, compliance score ring, stat tiles, donut chart, recent activity feed (driven by `AuditLogEntry`), quick access panel.
   - Acceptance: dashboard renders live counts sourced from real (seeded) data, not hardcoded placeholders; recent activity feed reflects actual `AuditLogEntry` rows for the logged-in user's org only (tie back to cross-tenant test: Org B's activity never appears for an Org A session).
-- [ ] Compliance score placeholder formula documented in code and in README (explicitly marked as a V1 placeholder, easily replaceable).
+  - Verified: `src/app/dashboard/page.tsx` renders `src/server/dashboard/data.ts`'s `getDashboardData()` output through `src/components/dashboard/{stat-tile,compliance-ring,module-donut,activity-feed,quick-access}.tsx`. Live curl smoke test confirmed real, non-hardcoded values (Sites: 1, Team members: 2, Compliance score: 100, activity feed showing "Smoke Owner created the organisation" / "created a site" / "invited a team member" with real timestamps). Cross-tenant isolation of the feed and counts unit-tested in `tests/phase2-onboarding-dashboard.test.ts` ("dashboard data: counts and activity feed are strictly org-scoped") using distinctive per-org marker rows, plus re-run of the full Phase 1 `tests/tenant-isolation.test.ts` suite (still 14/14 passing).
+- [x] Compliance score placeholder formula documented in code and in README (explicitly marked as a V1 placeholder, easily replaceable).
   - Acceptance: formula is a pure function with a unit test, and its docstring/README entry states inputs, output range, and that it is provisional.
+  - Verified: `src/server/compliance/score.ts` (`computeComplianceScore`, `complianceBand`) is a pure function with an extensive V1-placeholder docstring; README.md has a matching "Compliance score (V1 placeholder)" section. 7 unit tests cover known-input cases including the exact weighted-blend arithmetic, zero-denominator neutrality, and out-of-range clamping.
+  - Deviation: no shadcn/ui or chart library was added (consistent with Phase 1's "hand-written Tailwind" note) — the compliance ring and module donut are hand-built SVG/CSS-conic-gradient components using the dataviz skill's validated default status/categorical palettes (fixed hue order, keyed by `ModuleName` so role-based visibility never repaints colors). No dark-mode variants were added, matching every other page in this codebase, which is light-only throughout Phase 1 and Phase 2.
 
 ### Phase 2 gate
-- [ ] Migrations clean from scratch (fresh DB, not reusing Phase 1's).
-- [ ] Seed works.
-- [ ] Cross-tenant isolation suite re-run and still passes (paste output).
-- [ ] All Phase 2 pages render for at least one user per role.
+
+- [x] Migrations clean from scratch (fresh DB, not reusing Phase 1's).
+  ```
+  $ sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_dev_phase2;"
+  DROP DATABASE
+  $ sudo -u postgres psql -c "CREATE DATABASE bncl_dev_phase2 OWNER bncl;"
+  CREATE DATABASE
+  $ DATABASE_URL="postgresql://bncl:bncl_dev_password@localhost:5432/bncl_dev_phase2?schema=public" npx prisma migrate deploy
+  1 migration found in prisma/migrations
+  Applying migration `20260714183643_init`
+  All migrations have been successfully applied.
+  ```
+- [x] Seed works.
+  ```
+  $ DATABASE_URL="postgresql://bncl:bncl_dev_password@localhost:5432/bncl_dev_phase2?schema=public" npm run db:seed
+  Seed complete:
+    Org A: Greenfield Aesthetic Clinic (demo-org-a)
+    Org B: Riverside Dental Practice (demo-org-b)
+    BNCL internal admin: admin@bncl-solutions.example / BnclAdmin1234!
+    Org A owner: owner@greenfield-demo.example / DemoOwner1234!
+    Org B owner: owner@riverside-demo.example / DemoOwner1234!
+  ```
+  (Same drop/create/migrate/seed sequence repeated against `bncl_test_phase2` for the test run below.)
+- [x] Cross-tenant isolation suite re-run and still passes (paste output).
+  ```
+  $ DATABASE_URL="postgresql://bncl:bncl_dev_password@localhost:5432/bncl_test_phase2?schema=public" npx vitest run
+   ✓ tests/tenant-isolation.test.ts (14 tests) 106ms
+   ✓ tests/phase2-onboarding-dashboard.test.ts (16 tests) 776ms
+
+   Test Files  2 passed (2)
+        Tests  30 passed (30)
+  ```
+- [x] All Phase 2 pages render for at least one user per role.
+  - Live-tested against the freshly-seeded `bncl_dev_phase2` DB (`PORT=3010 npm run dev`), one login per role:
+    - OWNER (`owner@greenfield-demo.example`): `/dashboard` 200, `/dashboard/admin/users` 200, `/dashboard/setup-wizard` 200.
+    - REGISTERED_MANAGER (`manager@greenfield-demo.example`): `/dashboard` 200, `/dashboard/admin/users` 200, `/dashboard/setup-wizard` 200.
+    - STAFF (`staff@greenfield-demo.example`): `/dashboard` 200, `/dashboard/setup-wizard` 200, `/dashboard/admin/users` 500 — **expected**, not a bug: STAFF's seeded `RolePermission` row has `canView: false` on `ADMIN_USERS` (all `ADMIN_*` modules are view-blocked for STAFF per `prisma/seed.ts`'s `permissionsFor`), so `requireModulePermission` throws `ForbiddenError` server-side and Next.js renders its default error boundary rather than leaking the org's user list — identical, deliberate pattern to Phase 1's `src/app/bncl-admin/page.tsx` (see that file's own comment).
+  - New sign-up end-to-end also live-verified: `POST /api/signup` -> Credentials sign-in -> `POST /api/setup-wizard` -> `POST /api/invites` -> `GET/POST /api/invites/accept` -> `GET /dashboard` (see chat transcript for full curl sequence); dashboard HTML confirmed to contain real computed values, not placeholders.
 
 ---
 

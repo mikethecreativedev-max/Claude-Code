@@ -2,16 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 
-import { inviteUser, changeUserRole, disableUser, reactivateUser } from "@/server/admin/users";
+import { changeUserRole, disableUser, reactivateUser } from "@/server/admin/users";
 
-export async function inviteUserAction(formData: FormData) {
-  await inviteUser({
-    email: formData.get("email"),
-    name: formData.get("name"),
-    role: formData.get("role"),
-  });
-  revalidatePath("/dashboard/admin/users");
-}
+// Inviting a new user goes through the token-based flow in
+// src/server/onboarding/invite.ts (POST /api/invites, rendered by
+// <InviteForm> on this page) — this file only manages existing users.
 
 export async function changeUserRoleAction(formData: FormData) {
   await changeUserRole({
