@@ -7,22 +7,23 @@ hospitals), built around CQC Regulation 17. Full concept and build spec:
 
 ## Status
 
-**Phase 1 (Foundation) and Phase 2 (Onboarding and Dashboard) complete and
-verified** — see `BUILD_CHECKLIST.md` for the full phase-by-phase plan and
-real verification output (migrations from scratch, seed, the combined
-30-test cross-tenant isolation + onboarding/dashboard suite, live RBAC nav
-checks across three roles, and end-to-end curl smoke tests of sign-up,
-setup wizard, invite/accept, and the dashboard). Phases 3–7 are not yet
-built.
+**Phases 1, 2, 3, 4, 5, and 7 complete and verified.** Only Phase 6
+(Evidence Pack Generator) remains — see `BUILD_CHECKLIST.md` for the full
+phase-by-phase plan and real verification output (migrations from scratch,
+seed, the combined tenant-isolation test suite across every module, live
+RBAC nav checks across three roles, end-to-end curl smoke tests of sign-up/
+setup-wizard/invite-accept, magic-link login, and per-module CRUD flows).
 
 What exists: auth (Credentials + magic link), the scoped data-access layer,
-sign-up (Organisation + Owner User + DataProcessingAgreement), the setup
-wizard (org details, sites, registered activities), a role invite flow
-(token-based accept), and a dashboard shell (live counts, a V1-placeholder
-compliance score ring, a module-records donut chart, an AuditLogEntry-driven
-activity feed, and a quick access panel) — on top of Phase 1's
-RBAC permission checks, the BNCL super-admin module, base nav/layout, and
-the automated tenant-isolation test suite and import-discipline check.
+RBAC permission checks and server-side tier gating, the BNCL super-admin
+module, sign-up/setup-wizard/role-invite, a dashboard shell (live counts,
+compliance score ring, activity feed), the Q&G Hub and Inspection Readiness
+Scorer (free tier), Audits/Incidents/Risk Register/Policies (paid,
+append-only versioned, Reg 17/CQC/Six Pillar tagged), Feedback & Complaints,
+Staff Training, Notices, Events (minimal generic log — see "Known open
+item" below), a unified Calendar, Notifications, user/site/billing admin
+with Stripe webhooks, and the Data Protection Centre — on top of the
+automated tenant-isolation test suite and import-discipline check.
 
 ## Tech stack
 
@@ -76,6 +77,20 @@ referrals, significant events short of a full incident), or (b) a broader
 catch-all that Incidents would sit inside. Until product/client confirmation
 arrives, `Event` is built as a minimal generic log (Phase 5) and must not be
 merged into or made a subtype of `Incident`, or vice versa.
+
+**Events implementation note:** the minimal generic log described above is
+built — `src/server/modules/events.ts`, `/api/events*`, `/dashboard/events*`
+— and deliberately does not go beyond it: `eventType` is free text with UI
+suggestions (`SUGGESTED_EVENT_TYPES`, not an enum), plus title, description,
+date/time, status, Reg 17 tagging, and attachments. This still does not
+resolve the open question above — it remains a generic log, not a decision
+about which of (a)/(b) is correct, and `Incident` must still not be merged
+with it. Event attachments have a real file-upload path
+(`src/server/storage/local-upload.ts`), writing to a local, gitignored
+`.uploads/` directory, since no S3-compatible client is configured in this
+environment; the `/api/events/[id]/attachments` JSON route still accepts
+pre-computed metadata directly (`s3Key`/`fileName`/etc.) for programmatic
+callers, so swapping in a real S3 client later is a drop-in change.
 
 ## Compliance score (V1 placeholder)
 

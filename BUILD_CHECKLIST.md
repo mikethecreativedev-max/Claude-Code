@@ -423,22 +423,125 @@ Re-run against the merged Phase 1+2+3+4+7 codebase before push — see "Post-mer
 
 ## Phase 5 — Supporting Modules
 
-- [ ] Feedback & Complaints: list/create/edit, outcome tracking.
-- [ ] Staff Training: records, expiry tracking, status derivation (`VALID`/`EXPIRING_SOON`/`EXPIRED`) feeding into Calendar.
-  - Acceptance: a training record within the "expiring soon" window (define and document the threshold, e.g. 30 days) produces a `CalendarTask`.
-- [ ] Notices: post/view, audience targeting (`ALL_STAFF`/`MANAGERS_ONLY`/`SPECIFIC_SITE`), acknowledgement tracking via `NoticeAcknowledgement`.
-  - Acceptance: a `SPECIFIC_SITE` notice is genuinely invisible to users at other sites in the *same* org (site-level scoping, not just org-level) — verified by test.
-- [ ] Events: minimal generic log — list, create/edit with `eventType` as free-text-plus-suggestions, tagging, attachments, status.
-  - Acceptance: Events is NOT merged into Incidents and Incidents is NOT a subtype of Events (verified by code review — separate models, separate routes, separate nav items). A code comment and a README section state the Events definition is pending product confirmation, per the source doc's open item — this must not be silently resolved by this phase.
-- [ ] Unified Calendar: aggregates `CalendarTask` across audits, policy reviews, training expiries, events.
-- [ ] Notifications: system-generated, distinct from Notices (verify no code path conflates the two models).
-- [ ] Cross-tenant isolation re-verified for all Phase 5 modules.
+- [x] Feedback & Complaints: list/create/edit, outcome tracking.
+  - Acceptance: `src/server/modules/feedback.ts` + `/dashboard/feedback` (list, create form) and `/dashboard/feedback/[id]` (edit, outcome/status). **Verified live** — see curl/browser output below and `tests/phase5-supporting-modules.test.ts`.
+- [x] Staff Training: records, expiry tracking, status derivation (`VALID`/`EXPIRING_SOON`/`EXPIRED`) feeding into Calendar.
+  - Acceptance: a training record within the "expiring soon" window produces a `CalendarTask`. **Threshold: 30 days**, defined and documented in code as `EXPIRING_SOON_WINDOW_DAYS` in `src/server/modules/training.ts`. `deriveTrainingStatus()` is a pure, unit-tested function. **Verified** — `tests/phase5-supporting-modules.test.ts` section (c) proves an EXPIRING_SOON record produces exactly one `CalendarTask`, and that re-deriving status on every read (`listTrainingRecords`, also what the unified Calendar page triggers) does not duplicate it — idempotent by construction (`ensureTrainingCalendarTask` looks up the existing row by `(linkedModule, linkedEntityId)` before creating). Also verified live via curl (see below): a training record with `expiryDate` 6 days out was created with `status: "EXPIRING_SOON"` and immediately appeared on `/api/calendar`.
+- [x] Notices: post/view, audience targeting (`ALL_STAFF`/`MANAGERS_ONLY`/`SPECIFIC_SITE`), acknowledgement tracking via `NoticeAcknowledgement`.
+  - Acceptance: a `SPECIFIC_SITE` notice is genuinely invisible to users at other sites in the *same* org (site-level scoping, not just org-level) — verified by test. **Verified** — `src/server/modules/notices.ts`'s `listVisibleNotices`/`getVisibleNotice` build the site-visibility condition into the Prisma `where` clause itself (not a post-fetch filter), and `tests/phase5-supporting-modules.test.ts` section (b) seeds a **second site within the same org** plus a staff user assigned only to it, then proves: the Site-1 user sees the notice (positive control), the Site-2 user does **not** see it in the list or via direct id lookup, and the Site-2 user's direct `acknowledgeNotice()` call is rejected. Full pages at `/dashboard/notices` and `/dashboard/notices/[id]` (roster of acknowledged/not-acknowledged, gated on edit permission).
+- [x] Events: minimal generic log — list, create/edit with `eventType` as free-text-plus-suggestions, tagging, attachments, status.
+  - Acceptance: Events is NOT merged into Incidents and Incidents is NOT a subtype of Events (verified by code review — separate model `Event`, separate routes under `/api/events` and `/dashboard/events`, separate nav item). The "definition pending product confirmation" note is carried in `src/server/modules/events.ts` (header comment), `src/app/dashboard/events/page.tsx`, and README.md's existing "Known open item: Events" section (extended below, not replaced) — not silently resolved by this phase. Tagging (`RegClauseTag`, with the caller's-org-ownership check the schema calls out) and attachments both implemented; attachments have a real file-upload path (`src/server/storage/local-upload.ts`, writing to a gitignored local `.uploads/` dir) backing the dashboard's multipart form, in addition to the metadata-only JSON API contract (no S3 client configured in this environment — documented deviation, unchanged from the schema/README's existing "not yet wired (Phase 4+)" note).
+- [x] Unified Calendar: aggregates `CalendarTask` across audits, policy reviews, training expiries, events.
+  - Acceptance: `/dashboard/calendar` and `/api/calendar` group `CalendarTask` rows by due date; visiting either first re-runs the training module's live status-derivation pass so newly EXPIRING_SOON/EXPIRED records are reflected without a separate visit to `/dashboard/training`. Audits/policy-review-sourced `CalendarTask` rows are read generically (no hard dependency on Phase 4 having landed in this worktree) — Phase 4 doesn't exist yet here, so only training + manual tasks are exercised in verification, which is consistent with what's actually built. **Verified live** (see curl output below).
+- [x] Notifications: system-generated, distinct from Notices (verify no code path conflates the two models).
+  - Acceptance: `Notification` and `Notice` are separate Prisma models; `src/server/modules/notifications.ts` is the only place `Notification` rows are written, and it's called by other modules (`notices.ts`, `training.ts`) as an explicit side effect — no code path writes to `Notice` from `notifications.ts` or vice versa. No `NOTIFICATIONS` `ModuleName`/`RolePermission` row exists by design (personal inbox, not a governance module); gated on `requireAuth()` + row-ownership (`userId === session.id`) instead, documented in-code. `/dashboard/notifications` page + "Mark as read" action. **Verified** by `tests/phase5-supporting-modules.test.ts` section (d): an `acknowledgementRequired:true` Notice produces one distinct `Notification` row per targeted user (poster excluded), and a Notice without it produces zero.
+- [x] Cross-tenant isolation re-verified for all Phase 5 modules.
+  - **Verified** — `tests/phase5-supporting-modules.test.ts` section (a): Org A cannot read/edit/delete Org B's `FeedbackComplaint`, `Event`, `TrainingRecord`, `Notice`, `CalendarTask`, or `Notification` (12 assertions across the 6 models, same read/update/delete attack pattern as `tests/tenant-isolation.test.ts`).
+
+**Deviation note (found and fixed during this phase, not merely "code compiled"):** this worktree had two complete, independently-written implementations of every Phase 5 module sitting side by side uncommitted — `src/server/modules/*.ts` (wired to every `/api/*` route) and a second `src/server/{notices,events,feedback,calendar,training,notifications}/service.ts` tree with its own `src/lib/validation/phase5.ts` and `src/server/audit-log/log.ts` (wired to the `/dashboard/*` pages instead). Both were reasonably well-written and independently correct on tenant scoping, but having two parallel services for the same data was a real split-brain risk (e.g. `getNoticeAcknowledgementStatus` in the surviving tree was initially missing `site`/`postedBy` on its re-fetched `notice` — caught by wiring the dashboard detail page against it and re-checking the return shape, not by either tree's own tests). Consolidated onto `src/server/modules/*` (already proven by the API routes) — the dashboard actions/pages were rewritten against it, a couple of read helpers (`getEvent`, `getFeedback`, `listRegSubClausesForTagging`) were added to close the gap, the real local-disk file-upload path (`saveLocalUpload`) was preserved and wired in, and the entire duplicate tree was deleted. `src/server/org/directory.ts` (small, non-duplicative site/user list helpers used by several modules' pickers) was kept as-is.
 
 ### Phase 5 gate
-- [ ] Migrations clean from scratch.
-- [ ] Seed works.
-- [ ] Cross-tenant isolation suite, extended to cover Phase 5 modules, passes (paste output).
-- [ ] All Phase 5 pages render.
+- [x] Migrations clean from scratch.
+- [x] Seed works.
+- [x] Cross-tenant isolation suite, extended to cover Phase 5 modules, passes (paste output).
+- [x] All Phase 5 pages render.
+
+### Phase 5 verification output
+
+All commands below were run against dropped-and-recreated (true from-scratch) local Postgres databases (`bncl_dev_phase5`, `bncl_test_phase5`), not reused state.
+
+```
+$ sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_dev_phase5;" && sudo -u postgres psql -c "CREATE DATABASE bncl_dev_phase5 OWNER bncl;"
+$ sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_test_phase5;" && sudo -u postgres psql -c "CREATE DATABASE bncl_test_phase5 OWNER bncl;"
+DROP DATABASE
+CREATE DATABASE
+DROP DATABASE
+CREATE DATABASE
+
+$ DATABASE_URL=".../bncl_dev_phase5" npx prisma migrate deploy
+1 migration found in prisma/migrations
+Applying migration `20260714183643_init`
+All migrations have been successfully applied.
+
+$ DATABASE_URL=".../bncl_dev_phase5" npm run db:seed
+Seed complete:
+  Org A: Greenfield Aesthetic Clinic (demo-org-a)
+  Org B: Riverside Dental Practice (demo-org-b)
+  BNCL internal admin: admin@bncl-solutions.example / BnclAdmin1234!
+  Org A owner: owner@greenfield-demo.example / DemoOwner1234!
+  Org B owner: owner@riverside-demo.example / DemoOwner1234!
+
+$ DATABASE_URL=".../bncl_test_phase5" npx prisma migrate deploy   # same output, applied clean
+$ DATABASE_URL=".../bncl_test_phase5" npm run db:seed             # same output, seeded clean
+
+$ DATABASE_URL=".../bncl_test_phase5" npm test
+
+ ✓ tests/tenant-isolation.test.ts (14 tests) 262ms
+ ✓ tests/phase5-supporting-modules.test.ts (12 tests) 482ms
+
+ Test Files  2 passed (2)
+      Tests  26 passed (26)
+
+$ npm run check:tenant-isolation-imports
+OK: no unscoped raw-Prisma imports found outside the allowlist (5 allowlisted files).
+
+$ npm run lint
+✔ No ESLint warnings or errors
+
+$ npm run build
+✓ Compiled successfully
+✓ Linting and checking validity of types ...
+✓ Generating static pages (19/19)
+Route (app)                              Size     First Load JS
+├ ƒ /api/calendar                        0 B                0 B
+├ ƒ /api/events[...]                     0 B                0 B
+├ ƒ /api/feedback[...]                   0 B                0 B
+├ ƒ /api/notices[...]                    0 B                0 B
+├ ƒ /api/notifications[...]              0 B                0 B
+├ ƒ /api/training[...]                   0 B                0 B
+├ ƒ /dashboard/calendar                  162 B          87.5 kB
+├ ƒ /dashboard/events                    183 B          96.2 kB
+├ ƒ /dashboard/events/[id]               162 B          87.5 kB
+├ ƒ /dashboard/feedback                  183 B          96.2 kB
+├ ƒ /dashboard/feedback/[id]             162 B          87.5 kB
+├ ƒ /dashboard/notices                   183 B          96.2 kB
+├ ƒ /dashboard/notices/[id]              162 B          87.5 kB
+├ ƒ /dashboard/notifications             162 B          87.5 kB
+├ ƒ /dashboard/training                  162 B          87.5 kB
+```
+
+Live smoke test (`PORT=3014 npm run dev` against `bncl_dev_phase5`, real HTTP via curl, real NextAuth Credentials sessions for two different seeded users — Org A Owner and Org A Staff):
+
+```
+POST /api/auth/callback/credentials (owner@greenfield-demo.example) -> 200
+POST /api/auth/callback/credentials (staff@greenfield-demo.example) -> 200
+
+POST /api/notices {title:"Smoke test notice 2", audience:"ALL_STAFF", acknowledgementRequired:true} (as Owner)
+-> 201 {"item":{"id":"cmrl9kg6m0001d2wngbep5zeo", ...}}
+
+GET /api/notifications (as Staff, BEFORE acknowledging)
+-> 200 {"items":[{"type":"NOTICE_ACKNOWLEDGEMENT_REQUIRED","relatedEntityId":"cmrl9kg6m0001d2wngbep5zeo","readStatus":false,...}]}
+
+POST /api/notices/cmrl9kg6m0001d2wngbep5zeo/acknowledge (as Staff — a DIFFERENT user from the poster)
+-> 201 {"item":{"id":"cmrl9kky20009d2wnmpxwwm73","noticeId":"cmrl9kg6m0001d2wngbep5zeo","userId":"cmrl9e6n3002qeo3nks450a1a",...}}
+
+GET /api/notices/cmrl9kg6m0001d2wngbep5zeo (as Owner — roster view)
+-> 200 {"acknowledged":[{"name":"Greenfield Aesthetic Clinic Staff Member",...}],
+        "notAcknowledged":[{"name":"...Owner",...},{"name":"...Registered Manager",...}]}
+
+POST /api/training {courseName:"Smoke test: fire safety", expiryDate:"2026-07-20"} (6 days out, as Owner)
+-> 201 {"item":{"status":"EXPIRING_SOON",...}}
+
+GET /api/calendar (as Owner)
+-> 200 {"groups":[{"date":"2026-07-20","items":[{"linkedModule":"TRAINING","title":"Training expiry: Smoke test: fire safety",...}]}]}
+
+GET /dashboard/notices, /dashboard/notices/[id], /dashboard/calendar, /dashboard/notifications,
+    /dashboard/feedback, /dashboard/events, /dashboard/training
+-> 200 for both Owner and Staff sessions, no error markers; page content spot-checked
+   (e.g. /dashboard/notices/[id] renders "Acknowledgement roster" / "Acknowledged (1)" / notice body;
+   /dashboard/calendar renders "Training expiry: Smoke test: fire safety" grouped under 2026-07-20;
+   /dashboard/notifications (Staff) renders "A notice needs your acknowledgement" + "Mark as read").
+```
 
 ---
 
