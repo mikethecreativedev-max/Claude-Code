@@ -6,15 +6,21 @@ import {
   createQGHubContent,
   deleteQGHubContent,
   publishQGHubContent,
+  requireBnclAdmin,
   unpublishQGHubContent,
 } from "@/server/bncl-admin/client";
 
 export async function createQGHubContentAction(formData: FormData) {
-  await createQGHubContent({
-    title: formData.get("title"),
-    category: formData.get("category"),
-    contentType: formData.get("contentType"),
-    body: formData.get("body") || undefined,
+  // createQGHubContent takes the session explicitly (see the header
+  // comment in src/server/bncl-admin/client.ts) — fetch it here since a
+  // server action has no session object in hand otherwise.
+  const session = await requireBnclAdmin();
+  await createQGHubContent(session, {
+    title: String(formData.get("title") ?? ""),
+    category: String(formData.get("category") ?? ""),
+    contentType: formData.get("contentType") as "ARTICLE" | "LESSON",
+    publishStatus: "DRAFT",
+    body: (formData.get("body") as string) || undefined,
   });
   revalidatePath("/bncl-admin/qg-hub");
 }

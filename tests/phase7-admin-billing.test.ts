@@ -450,15 +450,20 @@ describe("(e) BNCL super-admin Q&G Hub content management: non-BNCL_ADMIN reject
     it(`createQGHubContent rejects a ${label} session`, async () => {
       mockSession(get());
       await expect(
-        createQGHubContent({ title: "x", category: "y", contentType: "ARTICLE" })
+        createQGHubContent(get(), {
+          title: "x",
+          category: "y",
+          contentType: "ARTICLE",
+          publishStatus: "DRAFT",
+        })
       ).rejects.toThrow(BnclAdminRequiredError);
     });
 
     it(`updateQGHubContent rejects a ${label} session`, async () => {
       mockSession(get());
-      await expect(updateQGHubContent({ id: "does-not-matter", title: "x" })).rejects.toThrow(
-        BnclAdminRequiredError
-      );
+      await expect(
+        updateQGHubContent(get(), "does-not-matter", { title: "x" })
+      ).rejects.toThrow(BnclAdminRequiredError);
     });
 
     it(`publishQGHubContent rejects a ${label} session`, async () => {
@@ -480,18 +485,30 @@ describe("(e) BNCL super-admin Q&G Hub content management: non-BNCL_ADMIN reject
   it("unauthenticated caller is rejected from createQGHubContent too", async () => {
     mockNoSession();
     await expect(
-      createQGHubContent({ title: "x", category: "y", contentType: "ARTICLE" })
+      createQGHubContent(orgAOwner, {
+        title: "x",
+        category: "y",
+        contentType: "ARTICLE",
+        publishStatus: "DRAFT",
+      })
     ).rejects.toThrow();
   });
 
   it("sanity check: a genuine BNCL_ADMIN CAN create/publish/unpublish/delete Q&G Hub content", async () => {
     const bnclAdmin = await rawPrisma.user.findFirstOrThrow({ where: { role: "BNCL_ADMIN" } });
-    mockSession({ id: bnclAdmin.id, orgId: bnclAdmin.orgId, role: "BNCL_ADMIN", email: bnclAdmin.email });
+    const bnclAdminSession = {
+      id: bnclAdmin.id,
+      orgId: bnclAdmin.orgId,
+      role: "BNCL_ADMIN" as const,
+      email: bnclAdmin.email,
+    };
+    mockSession(bnclAdminSession);
 
-    const created = await createQGHubContent({
+    const created = await createQGHubContent(bnclAdminSession, {
       title: "Phase 7 test content",
       category: "Test",
       contentType: "ARTICLE",
+      publishStatus: "DRAFT",
       body: "test body",
     });
     expect(created.publishStatus).toBe("DRAFT");
