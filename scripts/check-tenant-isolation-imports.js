@@ -50,6 +50,11 @@ const SRC = path.join(ROOT, "src");
 //   scopedDb(user.orgId) once the org is known. It also owns VerificationToken
 //   reads/writes, which (like RolePermission) carries no orgId and is not a
 //   tenant-isolation concern.
+// - the taxonomy reference-data module (RegulatorySubClause,
+//   CQCKeyQuestion, SixPillar — added in Phase 4a/Audits+Incidents — are
+//   likewise global seed/reference tables with no orgId column, per the
+//   same rationale as RolePermission above; see
+//   src/server/taxonomy/reference-data.ts's header comment)
 const ALLOWLIST = [
   path.join(SRC, "server", "db", "prisma.ts"),
   path.join(SRC, "server", "db", "scoped-client.ts"),
@@ -60,6 +65,7 @@ const ALLOWLIST = [
   path.join(SRC, "server", "content", "qg-hub.ts"),
   path.join(SRC, "server", "onboarding", "signup.ts"),
   path.join(SRC, "server", "onboarding", "invite.ts"),
+  path.join(SRC, "server", "taxonomy", "reference-data.ts"),
 ];
 
 const IMPORT_PATTERN = /from\s+["']@\/server\/db\/prisma["']/;
