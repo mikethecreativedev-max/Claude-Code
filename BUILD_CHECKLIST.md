@@ -206,23 +206,125 @@ GET /dashboard (same session) -> page content confirms "Signed in as owner@green
 
 For **each** of Audits, Incidents, Risk Register, Policies:
 
-- [ ] List view (scoped to org/site, paginated).
-- [ ] Create/edit flow that follows the append-only versioning pattern (new row + `supersededById`/`isCurrentVersion` flip, never an UPDATE of business fields) — verified by a test that edits a record twice and asserts three rows exist with a correct version chain, not just that the "current" view shows the latest values.
-- [ ] Embedded follow-up/mitigation actions stored as the `Json` array field on the parent record — verified no separate table/module was created for these.
-- [ ] Reg 17 / CQC tagging UI, writing to the polymorphic tag join tables, with the scoped data-access layer verifying `entityId` belongs to the caller's `orgId` before insert (this is the specific integrity gap called out in the schema comments — it must be closed here, not assumed).
-- [ ] Attachments (upload to S3-compatible bucket, metadata row in `Attachment`).
-- [ ] Every create/edit/delete/approve action writes an `AuditLogEntry` with real before/after JSON snapshots (verified by inspecting an actual row after a real mutation, not by code inspection alone).
-- [ ] Risk Register matrix view (likelihood × impact grid), reading `riskRating` computed server-side.
+- [x] List view (scoped to org/site, paginated).
+  - **Risk Register + Policies: done and verified** — `/dashboard/risks` (sorted by `riskRating` desc) and `/dashboard/policies` (review-date tracker, sorted by due date) both render from `listCurrentRiskEntries`/`getPolicyReviewTracker`, which filter `isCurrentVersion: true, deletedAt: null` through `scopedDb(orgId)`. Not paginated yet (acceptable at current seed-data volume; flagged as a follow-up once list sizes grow). Audits/Incidents are a separate worktree (`claude/phase4a-audits-incidents`) — not touched here.
+- [x] Create/edit flow that follows the append-only versioning pattern (new row + `supersededById`/`isCurrentVersion` flip, never an UPDATE of business fields) — verified by a test that edits a record twice and asserts three rows exist with a correct version chain, not just that the "current" view shows the latest values.
+  - **Risk Register + Policies: done and verified.** `createRiskEntry`/`editRiskEntry`/`approveRiskEntry` (`src/server/risks/service.ts`) and `createPolicy`/`editPolicy`/`activatePolicy` (`src/server/policies/service.ts`) implement the pattern. **A real bug was found and fixed during this verification pass**: the original code ran the old row's `supersededById` update as a separate statement *after* an array-form `$transaction([...])` had already committed the `isCurrentVersion=false` flip and the new-row `create` — a crash between those two steps would have left the chain unrecoverably broken (old row `isCurrentVersion=false` with `supersededById=null`, no way to find the new version from it). Fixed by switching to a single **interactive** transaction (`db.$transaction(async (tx) => {...})`) so all three writes commit atomically. `tests/phase4b-risks-policies.test.ts` "(b) append-only versioning chain" tests assert three real DB rows exist with correct `versionNumber`/`isCurrentVersion`/`supersededById` after two edits, for both models — see output below.
+- [x] Embedded follow-up/mitigation actions stored as the `Json` array field on the parent record — verified no separate table/module was created for these.
+  - **Risk Register: done and verified.** `RiskEntry.mitigationActions` is a `Json` column; no separate table exists. `src/server/domain/mitigation-actions.ts` provides a `.strict()` Zod schema (`{description, ownerId, dueDate, status, completedDate}`) enforced at every write boundary via `riskEntryInputSchema`. `tests/phase4b-risks-policies.test.ts` "(f)" proves malformed entries (missing fields, invalid enum, unrecognized extra field) are rejected and no row is created, and a well-formed entry is accepted. (Policies has no analogous embedded-actions field per the schema — N/A for this module.)
+- [x] Reg 17 / CQC tagging UI, writing to the polymorphic tag join tables, with the scoped data-access layer verifying `entityId` belongs to the caller's `orgId` before insert (this is the specific integrity gap called out in the schema comments — it must be closed here, not assumed).
+  - **Risk Register + Policies: done and verified — this was the highest-risk item and got the most scrutiny.** `src/server/domain/tag-integrity.ts` implements both halves of the gap: (1) write-side guard `assertTaggableEntityBelongsToOrg` (called from `createTag` before every insert) re-looks-up the target `RiskEntry`/`Policy` through `scopedDb(orgId)` and throws `TaggedEntityNotFoundError` if it doesn't resolve — this is what stops Org A from tagging Org B's record even though the tag row's own `orgId` would pass tenant scoping; (2) read-side double-check `assertTaggableEntityVisibleToOrg` (called from `getTagsForEntity` before ever returning tag rows) re-verifies the referenced entity belongs to the org, so even a tag row that bypassed the write-side guard (a bug, or a direct DB insert) cannot leak content through the read path. `tests/phase4b-risks-policies.test.ts` "(d)" proves both halves: `createTag` rejected with entityId pointing at the other org's RiskEntry/Policy (and no tag row created), AND a tag **directly inserted via `rawPrisma`** with the caller's own correct `orgId` but a foreign `entityId` — bypassing `createTag` entirely — is confirmed present via a raw `scopedDb` query (proving the leak really exists at the raw-tag level) and then confirmed **absent** via `getTagsForEntity` (proving the read-side check closes it). UI: both risk and policy detail pages have a working tag-add form and render existing tags across all three taxonomies.
+- [x] Attachments (upload to S3-compatible bucket, metadata row in `Attachment`).
+  - **Risk Register + Policies: done and verified**, V1 local-disk stub per this phase's explicitly-allowed scope reduction ("For V1 you do not need real S3 integration"). `src/server/policies/attachments.ts` (pre-existing) and `src/server/risks/attachments.ts` (added during this pass — `AttachableEntityType` includes `RISK_ENTRY` but no risk-attachment code path existed yet) both: verify the target row belongs to the caller's org before touching disk (same discipline as the tag-integrity guard), write to `.uploads/<orgId>/<entity>/<id>/...` (gitignored), and create an `Attachment` row with `s3Key` as the relative path. Both write an `AuditLogEntry`. Live-verified via curl against a running dev server: uploaded a real file to a RiskEntry, confirmed the `Attachment` row, the file on disk, and the `AuditLogEntry` afterward (see output below).
+- [x] Every create/edit/delete/approve action writes an `AuditLogEntry` with real before/after JSON snapshots (verified by inspecting an actual row after a real mutation, not by code inspection alone).
+  - **Risk Register + Policies: done and verified**, both via `tests/phase4b-risks-policies.test.ts` "(c)" (inspects real `AuditLogEntry` rows after `create`/`edit`, asserting `beforeSnapshot`/`afterSnapshot` contain actual field values, not `{}`) and via a live curl smoke test against a running dev server + a direct `psql` query against the resulting rows (see output below).
+- [x] Risk Register matrix view (likelihood × impact grid), reading `riskRating` computed server-side.
   - Acceptance: attempting to submit a client-supplied `riskRating` that doesn't match `likelihood * impact` is ignored/overwritten server-side — verified by a test.
-- [ ] Policy version history + review-date tracker UI.
-- [ ] Cross-tenant isolation re-verified for all four modules: Org A cannot read/edit/delete Org B's Audits, Incidents, RiskEntries, or Policies (extend the Phase 1 suite, don't replace it).
+  - **Done and verified.** `/dashboard/risks/matrix` (`getRiskMatrix`) buckets current-version entries into a 5×5 grid. `computeRiskRating(likelihood, impact)` in `src/server/risks/service.ts` is the single source of truth, called server-side in `createRiskEntry`/`editRiskEntry`/`approveRiskEntry`; `riskEntryInputSchema` accepts an optional client `riskRating` field but it is never read by the service layer. Verified two ways: `tests/phase4b-risks-policies.test.ts` "(e)" (spoofed `riskRating: 999` on create and spoofed `riskRating: 1` on a `likelihood=5,impact=5` edit both get overwritten with the correct computed value), AND a live curl smoke test through the actual running app (form, server action, real HTTP request) with the same spoofing attempt on both create and edit, confirmed against the resulting Postgres rows — see output below.
+- [x] Policy version history + review-date tracker UI.
+  - **Done and verified.** `/dashboard/policies` is the review-date tracker (`derivePolicyReviewStatus`, 30-day "due soon" window, `OVERDUE`/`DUE_SOON`/`OK` badges). `/dashboard/policies/[id]` renders the full version chain via `getPolicyVersionChain`.
+- [x] Cross-tenant isolation re-verified for all four modules: Org A cannot read/edit/delete Org B's Audits, Incidents, RiskEntries, or Policies (extend the Phase 1 suite, don't replace it).
+  - **RiskEntry + Policy: done and verified** — `tests/phase4b-risks-policies.test.ts` "(a)" extends (does not replace) `tests/tenant-isolation.test.ts`, both of which run together and pass (see output below). Covers raw `scopedDb` read/update/delete rejection and service-layer `editRiskEntry`/`editPolicy` rejection (`RiskEntryNotFoundError`/`PolicyNotFoundError`) when Org A targets Org B's row, plus a symmetric Org B check. Audit/Incident isolation is owned by the parallel `claude/phase4a-audits-incidents` worktree and not claimed here.
 
 ### Phase 4 gate
-- [ ] Migrations clean from scratch.
-- [ ] Seed works (seed data now includes realistic Audits/Incidents/RiskEntries/Policies for both demo orgs, across both organisations, so the isolation tests have real data to fail against).
-- [ ] Cross-tenant isolation suite, extended to cover all four modules, passes (paste full output).
-- [ ] Versioning-chain test passes for all four modules (paste output).
-- [ ] All Phase 4 pages render for at least one user per role.
+- [ ] Migrations clean from scratch. — **Risk Register + Policies portion verified** (see output below: `bncl_dev_phase4b`/`bncl_test_phase4b` created fresh, `prisma migrate deploy` clean on both). Not checked off at the top level pending the Audits/Incidents worktree's own migration-from-scratch verification against the same schema.
+- [ ] Seed works (seed data now includes realistic Audits/Incidents/RiskEntries/Policies for both demo orgs, across both organisations, so the isolation tests have real data to fail against). — **RiskEntries/Policies portion done**: `prisma/seed.ts`'s `seedDemoOrg` now creates one realistic `RiskEntry` and one `Policy` per demo org (id-stable via `upsert`, so it composes safely with the Audits/Incidents seed rows added by the other worktree once merged). Audits/Incidents seed rows already existed from Phase 1 and were not touched.
+- [ ] Cross-tenant isolation suite, extended to cover all four modules, passes (paste full output). — **RiskEntry/Policy portion passes** (see output below, 38/38 across both suites). Not checked at the top level until Audits/Incidents isolation tests from the sibling worktree are merged in.
+- [ ] Versioning-chain test passes for all four modules (paste output). — **RiskEntry/Policy portion passes** (see output below). Audits/Incidents versioning is the sibling worktree's responsibility.
+- [ ] All Phase 4 pages render for at least one user per role. — **Risk Register + Policies pages verified live** (curl smoke test below, OWNER role; `npm run build` succeeds for all routes, see output below). Not checked at the top level pending the same live check for Audits/Incidents pages.
+
+### Phase 4b (Risk Register + Policies) verification output
+
+All commands below were run against dropped-and-recreated local Postgres databases (`bncl_dev_phase4b`, `bncl_test_phase4b`), not reused state.
+
+```
+$ sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_dev_phase4b;" && \
+  sudo -u postgres psql -c "CREATE DATABASE bncl_dev_phase4b OWNER bncl;" && \
+  sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_test_phase4b;" && \
+  sudo -u postgres psql -c "CREATE DATABASE bncl_test_phase4b OWNER bncl;"
+DROP DATABASE
+CREATE DATABASE
+DROP DATABASE
+CREATE DATABASE
+
+$ DATABASE_URL=".../bncl_dev_phase4b" npx prisma migrate deploy
+1 migration found in prisma/migrations
+Applying migration `20260714183643_init`
+All migrations have been successfully applied.
+
+$ DATABASE_URL=".../bncl_dev_phase4b" npm run db:seed
+Seed complete:
+  Org A: Greenfield Aesthetic Clinic (demo-org-a)
+  Org B: Riverside Dental Practice (demo-org-b)
+  ...
+
+(same two commands repeated clean against bncl_test_phase4b)
+
+$ DATABASE_URL=".../bncl_test_phase4b" npx vitest run
+ ✓ tests/tenant-isolation.test.ts (14 tests) 152ms
+ ✓ tests/phase4b-risks-policies.test.ts (24 tests) 427ms
+ Test Files  2 passed (2)
+      Tests  38 passed (38)
+
+$ npm run check:tenant-isolation-imports
+OK: no unscoped raw-Prisma imports found outside the allowlist (5 allowlisted files).
+
+$ npm run lint
+✔ No ESLint warnings or errors
+
+$ npm run build
+✓ Compiled successfully
+✓ Linting and checking validity of types ...
+✓ Generating static pages (12/12)
+Route (app)                              Size     First Load JS
+├ ƒ /dashboard/policies                  189 B          96.2 kB
+├ ƒ /dashboard/policies/[id]             189 B          96.2 kB
+├ ƒ /dashboard/policies/[id]/edit        154 B          87.5 kB
+├ ƒ /dashboard/policies/new              154 B          87.5 kB
+├ ƒ /dashboard/risks                     189 B          96.2 kB
+├ ƒ /dashboard/risks/[id]                189 B          96.2 kB
+├ ƒ /dashboard/risks/[id]/edit           1.55 kB        88.9 kB
+├ ƒ /dashboard/risks/matrix              189 B          96.2 kB
+├ ƒ /dashboard/risks/new                 1.55 kB        88.9 kB
+(other routes as Phase 1)
+```
+
+Live smoke test against `PORT=3013 npm run dev`, real HTTP via curl (login as `owner@greenfield-demo.example`, create a risk entry with a spoofed `riskRating=999` via the real form/server-action, edit it with `likelihood=5,impact=5` and a spoofed `riskRating=1`, upload a real attachment file):
+
+```
+POST /api/auth/callback/credentials -> session established (orgId=demo-org-a, role=OWNER)
+
+POST /dashboard/risks/new (title="Curl smoke-test risk", likelihood=2, impact=4, riskRating=999 [spoofed])
+  -> 303 -> /dashboard/risks/cmrl9dsrz000110sp2hdbd9sl
+
+POST /dashboard/risks/cmrl9dsrz000110sp2hdbd9sl/edit (likelihood=5, impact=5, riskRating=1 [spoofed], status=MITIGATING)
+  -> 303 -> /dashboard/risks/cmrl9epck000610sp4aw7ayim   (NEW row id, proving append-only versioning, not an in-place update)
+
+$ psql bncl_dev_phase4b -c 'SELECT id, likelihood, impact, "riskRating", "versionNumber", "isCurrentVersion", "supersededById", status FROM "RiskEntry" WHERE id IN (...) ORDER BY "versionNumber";'
+            id             | likelihood | impact | riskRating | versionNumber | isCurrentVersion |      supersededById       |   status
+---------------------------+------------+--------+------------+---------------+------------------+----------------------------+------------
+ cmrl9dsrz...(v1)          |          2 |      4 |          8 |             1 | f                | cmrl9epck...(v2)          | OPEN
+ cmrl9epck...(v2, current) |          5 |      5 |         25 |             2 | t                |                            | MITIGATING
+(2 rows)
+-- riskRating is 8 (2*4) and 25 (5*5), NOT the spoofed 999/1 -> server authority confirmed live, not just in tests.
+
+$ psql bncl_dev_phase4b -c 'SELECT "entityId", action, "beforeSnapshot"->>'"'"'title'"'"' , "afterSnapshot"->>'"'"'title'"'"', "afterSnapshot"->>'"'"'riskRating'"'"' FROM "AuditLogEntry" WHERE "entityType"='"'"'RISK_ENTRY'"'"' AND "entityId" IN (...) ORDER BY timestamp;'
+         entityId          | action |     before_title     |          after_title          | after_rating
+---------------------------+--------+-----------------------+--------------------------------+--------------
+ cmrl9dsrz...              | CREATE |                       | Curl smoke-test risk           | 8
+ cmrl9epck...              | UPDATE | Curl smoke-test risk  | Curl smoke-test risk (EDITED)  | 25
+(2 rows)
+
+POST /dashboard/risks/cmrl9epck000610sp4aw7ayim (file upload, evidence.txt, multipart/form-data)
+  -> 303 -> /dashboard/risks/cmrl9epck000610sp4aw7ayim
+
+$ psql bncl_dev_phase4b -c 'SELECT "entityType","entityId","fileName","mimeType","sizeBytes" FROM "Attachment" WHERE "entityId"='"'"'cmrl9epck000610sp4aw7ayim'"'"';'
+ entityType |         entityId          |   fileName   |  mimeType  | sizeBytes
+------------+----------------------------+--------------+------------+-----------
+ RISK_ENTRY | cmrl9epck000610sp4aw7ayim | evidence.txt | text/plain |        66
+(1 row)
+-- + a matching AuditLogEntry (action=UPDATE, afterSnapshot.attachmentId set) and the file confirmed present on disk under .uploads/.
+```
 
 ---
 

@@ -263,7 +263,57 @@ async function seedDemoOrg(opts: {
     },
   });
 
-  return { org, site, owner, manager, staff, audit, incident };
+  // Realistic RiskEntry/Policy fixtures per demo org — required by
+  // BUILD_CHECKLIST.md Phase 4's gate ("seed data now includes realistic
+  // ... RiskEntries/Policies for both demo orgs") and is what gives the
+  // cross-tenant isolation suite real per-org data to fail against for
+  // these two models specifically.
+  const riskEntry = await prisma.riskEntry.upsert({
+    where: { id: `${opts.id}-risk-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-risk-1`,
+      orgId: org.id,
+      siteId: site.id,
+      title: "Unlabelled sharps bin nearing capacity",
+      description:
+        "Sharps bin in Treatment Room 2 observed at ~80% fill without a replacement on order.",
+      likelihood: 3,
+      impact: 4,
+      riskRating: 3 * 4,
+      ownerId: manager.id,
+      mitigationActions: [
+        {
+          description: "Order replacement sharps bin and schedule swap.",
+          ownerId: staff.id,
+          dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          status: "OPEN",
+          completedDate: null,
+        },
+      ],
+      reviewDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+      status: "OPEN",
+      versionNumber: 1,
+      isCurrentVersion: true,
+    },
+  });
+
+  const policy = await prisma.policy.upsert({
+    where: { id: `${opts.id}-policy-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-policy-1`,
+      orgId: org.id,
+      siteId: site.id,
+      title: "Infection Prevention & Control Policy",
+      reviewDate: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      status: "ACTIVE",
+      versionNumber: 1,
+      isCurrentVersion: true,
+    },
+  });
+
+  return { org, site, owner, manager, staff, audit, incident, riskEntry, policy };
 }
 
 async function main() {
