@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+
 import { rawPrisma } from "./prisma";
 
 /**
@@ -144,3 +146,68 @@ export function scopedDb(orgId: string) {
 }
 
 export type ScopedDb = ReturnType<typeof scopedDb>;
+
+/**
+ * Narrow, session-scoped access to the calling org's OWN Organisation row.
+ *
+ * Organisation is deliberately NOT in TENANT_MODELS above: it has no
+ * `orgId` column (its own `id` *is* the tenant id), so the generic
+ * where/data-injection extension can't cover it — injecting `{ orgId }`
+ * into a query against a model with no such column would either no-op or
+ * throw, not scope anything. Rather than silently leaving Organisation
+ * reads/writes unscoped, this function hardcodes `where: { id: orgId }` on
+ * every call, so a caller can never target any Organisation row other than
+ * its own, no matter what a caller passes in `data`. `orgId` must still
+ * come from the verified session, exactly like scopedDb().
+ */
+export function scopedOrganisation(orgId: string) {
+  if (!orgId || typeof orgId !== "string") {
+    throw new Error("scopedOrganisation() requires a non-empty orgId from the session");
+  }
+  return {
+    get: () => rawPrisma.organisation.findUnique({ where: { id: orgId } }),
+    update: (data: Prisma.OrganisationUpdateInput) =>
+      rawPrisma.organisation.update({ where: { id: orgId }, data }),
+  };
+}
+
+/**
+ * System-level (non-session) Organisation lookup by Stripe identifiers.
+ * Used ONLY by the Stripe webhook handler (src/server/billing/webhook.ts).
+ * A webhook request carries no user session — the caller's identity is the
+ * verified Stripe signature, and the target org is whichever one Stripe
+ * says the event belongs to. This is intentionally the only place besides
+ * bncl-admin/client.ts that resolves an Organisation without a
+ * session-derived orgId; it is narrow (Organisation only, matched only by
+ * Stripe-controlled ids), not a general escape hatch.
+ */
+export async function findOrganisationByStripeId(params: {
+  stripeCustomerId?: string;
+  stripeSubscriptionId?: string;
+}) {
+  const clauses: Prisma.OrganisationWhereInput[] = [];
+  if (params.stripeCustomerId) clauses.push({ stripeCustomerId: params.stripeCustomerId });
+  if (params.stripeSubscriptionId) clauses.push({ stripeSubscriptionId: params.stripeSubscriptionId });
+  if (clauses.length === 0) {
+    throw new Error(
+      "findOrganisationByStripeId requires a stripeCustomerId or stripeSubscriptionId"
+    );
+  }
+  return rawPrisma.organisation.findFirst({ where: { OR: clauses } });
+}
+
+/**
+ * System-level Organisation billing-field update by id, paired with
+ * findOrganisationByStripeId() above. Only ever called from the verified
+ * Stripe webhook path (src/server/billing/webhook.ts) with an id resolved
+ * server-side — never with a client- or session-supplied id.
+ */
+export async function systemUpdateOrganisationBilling(
+  organisationId: string,
+  data: Pick<
+    Prisma.OrganisationUpdateInput,
+    "subscriptionTier" | "billingStatus" | "stripeCustomerId" | "stripeSubscriptionId"
+  >
+) {
+  return rawPrisma.organisation.update({ where: { id: organisationId }, data });
+}

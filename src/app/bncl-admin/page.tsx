@@ -9,6 +9,11 @@ export default async function BnclAdminPage() {
   return (
     <main className="p-8">
       <h1 className="text-2xl font-semibold">BNCL Super-Admin — Cross-org overview</h1>
+      <p className="mt-2 text-sm">
+        <a href="/bncl-admin/qg-hub" className="text-brand-600 hover:underline">
+          Manage Q&amp;G Hub content →
+        </a>
+      </p>
       <table className="mt-6 w-full text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 text-slate-500">

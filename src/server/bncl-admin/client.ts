@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { rawPrisma } from "@/server/db/prisma";
 import { requireAuth, type SessionUser } from "@/server/auth/session";
 
@@ -56,4 +58,55 @@ export async function listOrgsForSuperAdmin() {
 export async function listQGHubContent() {
   await requireBnclAdmin();
   return rawPrisma.qGHubContent.findMany({ orderBy: { updatedAt: "desc" } });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Q&G Hub content management (Phase 7 write side — listQGHubContent above
+// was already the read path). QGHubContent is global, not tenant-scoped
+// (see prisma/schema.prisma), and per the schema's own comment is
+// "manageable only via the BNCL super-admin module" — every function below
+// calls requireBnclAdmin() itself, first, so the check can never be
+// forgotten at a call site (same discipline as the rest of this file).
+// ─────────────────────────────────────────────────────────────────────────
+
+const qgContentCreateSchema = z.object({
+  title: z.string().trim().min(1).max(300),
+  category: z.string().trim().min(1).max(200),
+  contentType: z.enum(["ARTICLE", "LESSON"]),
+  body: z.string().max(50_000).optional(),
+});
+
+const qgContentUpdateSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().trim().min(1).max(300).optional(),
+  category: z.string().trim().min(1).max(200).optional(),
+  contentType: z.enum(["ARTICLE", "LESSON"]).optional(),
+  body: z.string().max(50_000).optional(),
+});
+
+export async function createQGHubContent(input: unknown) {
+  await requireBnclAdmin();
+  const data = qgContentCreateSchema.parse(input);
+  return rawPrisma.qGHubContent.create({ data: { ...data, publishStatus: "DRAFT" } });
+}
+
+export async function updateQGHubContent(input: unknown) {
+  await requireBnclAdmin();
+  const { id, ...data } = qgContentUpdateSchema.parse(input);
+  return rawPrisma.qGHubContent.update({ where: { id }, data });
+}
+
+export async function publishQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.update({ where: { id }, data: { publishStatus: "PUBLISHED" } });
+}
+
+export async function unpublishQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.update({ where: { id }, data: { publishStatus: "DRAFT" } });
+}
+
+export async function deleteQGHubContent(id: string) {
+  await requireBnclAdmin();
+  return rawPrisma.qGHubContent.delete({ where: { id } });
 }
