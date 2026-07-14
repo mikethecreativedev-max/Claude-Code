@@ -1,0 +1,15 @@
+{
+  "name": "bncl-compliance-platform",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prisma:validate": "prisma validate",
+    "prisma:format": "prisma format"
+  },
+  "devDependencies": {
+    "prisma": "^5.20.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.20.0"
+  }
+}

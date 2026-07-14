@@ -1,0 +1,937 @@
+// BNCL Solutions — Governance & Compliance SaaS Platform
+// Prisma schema — Phase 1 deliverable (schema + checklist only, per build spec).
+//
+// ─────────────────────────────────────────────────────────────────────────
+// TENANT ISOLATION (read this before touching this file or any query code)
+// ─────────────────────────────────────────────────────────────────────────
+// Every tenant-scoped model below carries a required `orgId` column. No
+// application code may query these models with raw `prisma.<model>` calls —
+// all reads/writes go through the scoped data-access layer (src/server/db/
+// scoped-client.ts, built in Phase 1) which injects `orgId` from the
+// session on every call. The only exception is the BNCL super-admin module
+// (src/server/bncl-admin/**), which is the sole unscoped path and requires
+// the BNCL_ADMIN role explicitly. See BUILD_CHECKLIST.md Phase 1 for the
+// enforcement mechanism and the automated lint/test that guards this rule.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// APPEND-ONLY / VERSIONING PATTERN
+// ─────────────────────────────────────────────────────────────────────────
+// Audit, Incident, RiskEntry and Policy never have their business fields
+// UPDATEd in place. An edit creates a new row (versionNumber + 1) and sets
+// `supersededById` on the OLD row to point at the NEW row, and flips
+// `isCurrentVersion` on both. Every mutation (create, "edit", delete,
+// approve) is additionally written to AuditLogEntry with before/after JSON
+// snapshots, regardless of this row-level versioning.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// SHARED REG 17 / CQC / SIX-PILLAR TAXONOMY
+// ─────────────────────────────────────────────────────────────────────────
+// RegulatorySubClause, CQCKeyQuestion and SixPillar are global seed/reference
+// tables (no orgId — identical across all tenants). Evidence-generating
+// entities link to them via the three polymorphic join tables at the bottom
+// of this file (RegClauseTag, CQCKeyQuestionTag, SixPillarTag), never via
+// enum columns. These join tables use an `entityType` discriminator +
+// `entityId` string instead of a per-entity join table (which would mean
+// 3 taxonomies × 7 entities = 21 tables) — Prisma cannot express a DB-level
+// FK against a polymorphic target, so the scoped data-access layer MUST
+// verify entityId belongs to the caller's orgId before every insert/read
+// against these tables. This is called out explicitly in BUILD_CHECKLIST.md
+// as a tenant-isolation risk to test.
+//
+// Attachments follow the same polymorphic pattern (one Attachment table
+// instead of a file field duplicated on every entity).
+//
+// ─────────────────────────────────────────────────────────────────────────
+// V2 NAMESPACE RESERVATION (DO NOT ADD MODELS HERE)
+// ─────────────────────────────────────────────────────────────────────────
+// PatientRecord (EPR, DCB0129/DCB0160 scope) and BillingAccount/Invoice/
+// Payment (PCI-DSS-out-of-scope via Stripe) are V2 concerns. Their intended
+// home is separate Postgres schemas `v2_clinical` and `v2_billing`, created
+// only when V2 begins (via Prisma's multiSchema preview feature). No models,
+// migrations, or references to those namespaces exist in V1. Governance
+// models must never gain a foreign key into either namespace.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// NAMING CONVENTION
+// ─────────────────────────────────────────────────────────────────────────
+// Fields are camelCase and left unmapped (no @map/@@map) — table/column
+// names in Postgres match the Prisma model/field names exactly. This is a
+// deliberate V1 simplicity choice, not an oversight.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// IDENTITY & ACCESS
+// ═══════════════════════════════════════════════════════════════════════
+
+model Organisation {
+  id                    String           @id @default(cuid())
+  name                  String
+  subscriptionTier      SubscriptionTier @default(FREE)
+  billingStatus         BillingStatus    @default(TRIALING)
+  stripeCustomerId      String?          @unique
+  stripeSubscriptionId  String?          @unique
+  // Marks the single reserved internal org that BNCL_ADMIN users belong to.
+  // Seeded exactly once. The super-admin module checks role, not this flag —
+  // this flag exists only so BNCL staff have a syntactically valid tenant
+  // home without being mistaken for a client org anywhere in reporting/UI.
+  isInternal            Boolean          @default(false)
+  retentionPolicyMonths Int?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  deletedAt             DateTime?
+
+  sites                    Site[]
+  users                    User[]
+  audits                   Audit[]
+  incidents                Incident[]
+  events                   Event[]
+  riskEntries              RiskEntry[]
+  policies                 Policy[]
+  feedbackComplaints       FeedbackComplaint[]
+  notices                  Notice[]
+  readinessScores          ReadinessScore[]
+  calendarTasks            CalendarTask[]
+  trainingRecords          TrainingRecord[]
+  auditLogEntries          AuditLogEntry[]
+  notifications            Notification[]
+  dataProcessingAgreements DataProcessingAgreement[]
+  regClauseTags            RegClauseTag[]
+  cqcKeyQuestionTags       CQCKeyQuestionTag[]
+  sixPillarTags            SixPillarTag[]
+  attachments              Attachment[]
+
+  @@index([deletedAt])
+}
+
+model Site {
+  id                   String       @id @default(cuid())
+  orgId                String
+  organisation         Organisation @relation(fields: [orgId], references: [id])
+  name                 String
+  address              String?
+  registeredActivities String[]
+  cqcLocationId        String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  deletedAt            DateTime?
+
+  userSites          UserSite[]
+  audits             Audit[]
+  incidents          Incident[]
+  events             Event[]
+  riskEntries        RiskEntry[]
+  policies           Policy[]
+  feedbackComplaints FeedbackComplaint[]
+  notices            Notice[]
+  readinessScores    ReadinessScore[]
+  calendarTasks      CalendarTask[]
+  trainingRecords    TrainingRecord[]
+
+  @@index([orgId])
+  @@index([orgId, deletedAt])
+}
+
+model User {
+  id           String       @id @default(cuid())
+  orgId        String
+  organisation Organisation @relation(fields: [orgId], references: [id])
+  name         String
+  email        String
+  passwordHash String?
+  role         UserRole
+  status       UserStatus   @default(INVITED)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  userSites                      UserSite[]
+  auditsCompleted                Audit[]                   @relation("AuditCompletedBy")
+  incidentsReported              Incident[]                @relation("IncidentReportedBy")
+  riskEntriesOwned               RiskEntry[]               @relation("RiskOwner")
+  noticesPosted                  Notice[]                  @relation("NoticePostedBy")
+  noticeAcknowledgements         NoticeAcknowledgement[]
+  trainingRecords                TrainingRecord[]
+  calendarTasksAssigned          CalendarTask[]            @relation("CalendarTaskAssignee")
+  auditLogEntries                AuditLogEntry[]
+  notifications                  Notification[]
+  dataProcessingAgreementsSigned DataProcessingAgreement[] @relation("DPASignedBy")
+  attachmentsUploaded            Attachment[]
+  regClauseTagsCreated           RegClauseTag[]
+  cqcKeyQuestionTagsCreated      CQCKeyQuestionTag[]
+  sixPillarTagsCreated           SixPillarTag[]
+
+  // NextAuth (Auth.js) adapter relations
+  accounts Account[]
+  sessions Session[]
+
+  @@unique([orgId, email])
+  @@index([orgId])
+  @@index([orgId, deletedAt])
+}
+
+// Many-to-many: a user can be assigned to multiple sites within their org.
+model UserSite {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  siteId     String
+  site       Site     @relation(fields: [siteId], references: [id])
+  assignedAt DateTime @default(now())
+
+  @@unique([userId, siteId])
+  @@index([siteId])
+}
+
+// Global reference table: fixed permission matrix per role per module.
+// Seeded once in the initial migration; not tenant-scoped because the four
+// roles (Owner, Registered Manager, Staff, BNCL Admin) and their permission
+// sets are identical across every org by design.
+model RolePermission {
+  id         String     @id @default(cuid())
+  role       UserRole
+  module     ModuleName
+  canView    Boolean    @default(false)
+  canEdit    Boolean    @default(false)
+  canApprove Boolean    @default(false)
+
+  @@unique([role, module])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// REFERENCE / TAXONOMY (global seed data, shared across all tenants)
+// ═══════════════════════════════════════════════════════════════════════
+
+model RegulatorySubClause {
+  id           String @id @default(cuid())
+  regulation   String // e.g. "Reg 17"
+  subParagraph String // e.g. "17(2)(a)"
+  description  String
+
+  regClauseTags RegClauseTag[]
+
+  @@unique([regulation, subParagraph])
+}
+
+model CQCKeyQuestion {
+  id          String    @id @default(cuid())
+  name        CQCDomain @unique
+  description String
+
+  cqcKeyQuestionTags CQCKeyQuestionTag[]
+}
+
+model SixPillar {
+  id          String        @id @default(cuid())
+  name        SixPillarName @unique
+  description String
+
+  sixPillarTags SixPillarTag[]
+  audits        Audit[]
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// GOVERNANCE & COMPLIANCE (paid tier, tenant-scoped, append-only)
+// ═══════════════════════════════════════════════════════════════════════
+
+model Audit {
+  id              String       @id @default(cuid())
+  orgId           String
+  organisation    Organisation @relation(fields: [orgId], references: [id])
+  siteId          String
+  site            Site         @relation(fields: [siteId], references: [id])
+  type            String
+  scheduledDate   DateTime
+  completedDate   DateTime?
+  completedById   String?
+  completedBy     User?        @relation("AuditCompletedBy", fields: [completedById], references: [id])
+  resultScore     Int?
+  sixPillarId     String?
+  sixPillar       SixPillar?   @relation(fields: [sixPillarId], references: [id])
+  status          AuditStatus  @default(SCHEDULED)
+  // Embedded, not a separate module (per build spec): array of
+  // { description, ownerId, dueDate, status, completedDate }.
+  followUpActions Json         @default("[]")
+
+  // Versioning
+  versionNumber    Int     @default(1)
+  isCurrentVersion Boolean @default(true)
+  supersededById   String? @unique
+  supersededBy     Audit?  @relation("AuditVersionChain", fields: [supersededById], references: [id])
+  previousVersion  Audit?  @relation("AuditVersionChain")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, status])
+}
+
+model Incident {
+  id                        String           @id @default(cuid())
+  orgId                     String
+  organisation              Organisation     @relation(fields: [orgId], references: [id])
+  siteId                    String
+  site                      Site             @relation(fields: [siteId], references: [id])
+  reportedById              String
+  reportedBy                User             @relation("IncidentReportedBy", fields: [reportedById], references: [id])
+  dateTime                  DateTime
+  description               String
+  // Records that the reporter was shown and acknowledged the anonymisation
+  // guidance prompt before submitting the description (UI concern, Phase 4).
+  anonymisationAcknowledged Boolean          @default(false)
+  severityGrading           IncidentSeverity
+  psirfClassification       String
+  notifiableToCQC           Boolean          @default(false)
+  status                    IncidentStatus   @default(OPEN)
+  followUpActions           Json             @default("[]")
+  // NOTE: spec lists an embedded `audit_trail[]` field on Incident. We do
+  // NOT duplicate that here — it is satisfied by the global AuditLogEntry
+  // table (entityType=INCIDENT, entityId=this row's id), which is the same
+  // immutable log every other entity uses. See BUILD_CHECKLIST.md Phase 4.
+
+  versionNumber    Int       @default(1)
+  isCurrentVersion Boolean   @default(true)
+  supersededById   String?   @unique
+  supersededBy     Incident? @relation("IncidentVersionChain", fields: [supersededById], references: [id])
+  previousVersion  Incident? @relation("IncidentVersionChain")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, status])
+}
+
+// Definition intentionally pending — see README "Events" open item and
+// BUILD_CHECKLIST.md Phase 5. Built here exactly as specified in Section 2;
+// do not merge with Incident, do not make Incident a subtype of this.
+model Event {
+  id           String       @id @default(cuid())
+  orgId        String
+  organisation Organisation @relation(fields: [orgId], references: [id])
+  siteId       String
+  site         Site         @relation(fields: [siteId], references: [id])
+  eventType    String
+  title        String
+  description  String
+  dateTime     DateTime
+  status       EventStatus  @default(OPEN)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+}
+
+model RiskEntry {
+  id                String       @id @default(cuid())
+  orgId             String
+  organisation      Organisation @relation(fields: [orgId], references: [id])
+  siteId            String
+  site              Site         @relation(fields: [siteId], references: [id])
+  title             String
+  description       String
+  likelihood        Int // 1-5
+  impact            Int // 1-5
+  // Auto-calculated (likelihood * impact) by the scoped data-access layer
+  // on every write — never set directly by client input.
+  riskRating        Int
+  ownerId           String
+  owner             User         @relation("RiskOwner", fields: [ownerId], references: [id])
+  // Embedded, not a separate module: array of
+  // { description, ownerId, dueDate, status, completedDate }.
+  mitigationActions Json         @default("[]")
+  reviewDate        DateTime
+  status            RiskStatus   @default(OPEN)
+
+  versionNumber    Int        @default(1)
+  isCurrentVersion Boolean    @default(true)
+  supersededById   String?    @unique
+  supersededBy     RiskEntry? @relation("RiskVersionChain", fields: [supersededById], references: [id])
+  previousVersion  RiskEntry? @relation("RiskVersionChain")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, status])
+}
+
+model Policy {
+  id           String       @id @default(cuid())
+  orgId        String
+  organisation Organisation @relation(fields: [orgId], references: [id])
+  siteId       String
+  site         Site         @relation(fields: [siteId], references: [id])
+  title        String
+  reviewDate   DateTime
+  status       PolicyStatus @default(ACTIVE)
+  // Current file lives in Attachment (entityType=POLICY, entityId=this
+  // row's id); the data-access layer treats the most-recently-uploaded
+  // Attachment for a policy version as its "file_attachment".
+
+  versionNumber    Int     @default(1)
+  isCurrentVersion Boolean @default(true)
+  supersededById   String? @unique
+  supersededBy     Policy? @relation("PolicyVersionChain", fields: [supersededById], references: [id])
+  previousVersion  Policy? @relation("PolicyVersionChain")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, status])
+}
+
+model FeedbackComplaint {
+  id           String         @id @default(cuid())
+  orgId        String
+  organisation Organisation   @relation(fields: [orgId], references: [id])
+  siteId       String
+  site         Site           @relation(fields: [siteId], references: [id])
+  source       FeedbackSource
+  category     String
+  description  String
+  outcome      String?
+  status       FeedbackStatus @default(OPEN)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, status])
+}
+
+model Notice {
+  id                      String         @id @default(cuid())
+  orgId                   String
+  organisation            Organisation   @relation(fields: [orgId], references: [id])
+  // Nullable: a notice can target the whole org (audience=ALL_STAFF /
+  // MANAGERS_ONLY) rather than one site.
+  siteId                  String?
+  site                    Site?          @relation(fields: [siteId], references: [id])
+  title                   String
+  body                    String
+  noticeType              NoticeType
+  postedById              String
+  postedBy                User           @relation("NoticePostedBy", fields: [postedById], references: [id])
+  postedDate              DateTime       @default(now())
+  audience                NoticeAudience
+  acknowledgementRequired Boolean        @default(false)
+
+  acknowledgements NoticeAcknowledgement[]
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+}
+
+model NoticeAcknowledgement {
+  id             String   @id @default(cuid())
+  noticeId       String
+  notice         Notice   @relation(fields: [noticeId], references: [id])
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  acknowledgedAt DateTime @default(now())
+
+  @@unique([noticeId, userId])
+  @@index([userId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// FREE TIER
+// ═══════════════════════════════════════════════════════════════════════
+
+// Global content, not tenant-scoped — managed exclusively via the BNCL
+// super-admin module (BNCL_ADMIN role required). Readable by all orgs.
+model QGHubContent {
+  id            String          @id @default(cuid())
+  title         String
+  category      String
+  contentType   QGContentType
+  publishStatus QGPublishStatus @default(DRAFT)
+  body          String?
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model ReadinessScore {
+  id                     String       @id @default(cuid())
+  orgId                  String
+  organisation           Organisation @relation(fields: [orgId], references: [id])
+  siteId                 String?
+  site                   Site?        @relation(fields: [siteId], references: [id])
+  questionnaireResponses Json
+  scorePerDomain         Json // { SAFE: number, EFFECTIVE: number, ... }
+  overallScore           Float
+  dateTaken              DateTime     @default(now())
+
+  // NOTE: spec lists `historical_snapshots[]`. We do not embed history —
+  // each ReadinessScore row IS a snapshot; history is simply every row for
+  // an org ordered by dateTaken. See BUILD_CHECKLIST.md Phase 3.
+
+  @@index([orgId])
+  @@index([orgId, dateTaken])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SCHEDULING
+// ═══════════════════════════════════════════════════════════════════════
+
+model CalendarTask {
+  id               String               @id @default(cuid())
+  orgId            String
+  organisation     Organisation         @relation(fields: [orgId], references: [id])
+  siteId           String
+  site             Site                 @relation(fields: [siteId], references: [id])
+  linkedModule     CalendarLinkedModule
+  // Polymorphic pointer to the source record (Audit/Policy/TrainingRecord/
+  // Event id); nullable for manually-created tasks. Not a DB-level FK for
+  // the same reason as the tag/attachment tables above.
+  linkedEntityId   String?
+  title            String
+  dueDate          DateTime
+  assignedToId     String?
+  assignedTo       User?                @relation("CalendarTaskAssignee", fields: [assignedToId], references: [id])
+  status           CalendarTaskStatus   @default(PENDING)
+  reminderSettings Json                 @default("{}")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, dueDate])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// TRAINING
+// ═══════════════════════════════════════════════════════════════════════
+
+model TrainingRecord {
+  id             String         @id @default(cuid())
+  orgId          String
+  organisation   Organisation   @relation(fields: [orgId], references: [id])
+  siteId         String
+  site           Site           @relation(fields: [siteId], references: [id])
+  userId         String
+  user           User           @relation(fields: [userId], references: [id])
+  courseName     String
+  completionDate DateTime
+  expiryDate     DateTime?
+  // Certificate file lives in Attachment (entityType=TRAINING_RECORD).
+  status         TrainingStatus @default(VALID)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@index([orgId])
+  @@index([orgId, siteId])
+  @@index([orgId, expiryDate])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SYSTEM
+// ═══════════════════════════════════════════════════════════════════════
+
+model AuditLogEntry {
+  id             String              @id @default(cuid())
+  // Nullable ONLY for genuinely cross-org BNCL super-admin actions (e.g.
+  // QGHubContent edits, cross-org overview views). Every other mutation
+  // MUST populate orgId. The scoped data-access layer sets this
+  // automatically; the super-admin module sets it explicitly to null.
+  orgId          String?
+  organisation   Organisation?       @relation(fields: [orgId], references: [id])
+  entityType     AuditableEntityType
+  entityId       String
+  userId         String
+  user           User                @relation(fields: [userId], references: [id])
+  action         AuditLogAction
+  timestamp      DateTime            @default(now())
+  beforeSnapshot Json?
+  afterSnapshot  Json?
+
+  @@index([orgId])
+  @@index([orgId, entityType, entityId])
+  @@index([userId])
+}
+
+model Notification {
+  id                String               @id @default(cuid())
+  orgId             String
+  organisation      Organisation         @relation(fields: [orgId], references: [id])
+  userId            String
+  user              User                 @relation(fields: [userId], references: [id])
+  type              String
+  relatedEntityType AuditableEntityType?
+  relatedEntityId   String?
+  sentAt            DateTime             @default(now())
+  readStatus        Boolean              @default(false)
+  readAt            DateTime?
+
+  @@index([orgId])
+  @@index([orgId, userId, readStatus])
+}
+
+model DataProcessingAgreement {
+  id           String       @id @default(cuid())
+  orgId        String
+  organisation Organisation @relation(fields: [orgId], references: [id])
+  signedById   String
+  signedBy     User         @relation("DPASignedBy", fields: [signedById], references: [id])
+  signedDate   DateTime
+  version      String
+  // Signed document lives in Attachment (entityType=DATA_PROCESSING_AGREEMENT).
+
+  createdAt DateTime @default(now())
+
+  @@index([orgId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// POLYMORPHIC TAXONOMY TAGGING (see header comment for rationale)
+// ═══════════════════════════════════════════════════════════════════════
+
+model RegClauseTag {
+  id             String              @id @default(cuid())
+  orgId          String
+  organisation   Organisation        @relation(fields: [orgId], references: [id])
+  entityType     TaggableEntityType
+  entityId       String
+  regSubClauseId String
+  regSubClause   RegulatorySubClause @relation(fields: [regSubClauseId], references: [id])
+  taggedById     String
+  taggedBy       User                @relation(fields: [taggedById], references: [id])
+  taggedAt       DateTime            @default(now())
+
+  @@unique([entityType, entityId, regSubClauseId])
+  @@index([orgId, entityType, entityId])
+}
+
+model CQCKeyQuestionTag {
+  id               String             @id @default(cuid())
+  orgId            String
+  organisation     Organisation       @relation(fields: [orgId], references: [id])
+  entityType       TaggableEntityType
+  entityId         String
+  cqcKeyQuestionId String
+  cqcKeyQuestion   CQCKeyQuestion     @relation(fields: [cqcKeyQuestionId], references: [id])
+  taggedById       String
+  taggedBy         User               @relation(fields: [taggedById], references: [id])
+  taggedAt         DateTime           @default(now())
+
+  @@unique([entityType, entityId, cqcKeyQuestionId])
+  @@index([orgId, entityType, entityId])
+}
+
+model SixPillarTag {
+  id           String             @id @default(cuid())
+  orgId        String
+  organisation Organisation       @relation(fields: [orgId], references: [id])
+  entityType   TaggableEntityType
+  entityId     String
+  sixPillarId  String
+  sixPillar    SixPillar          @relation(fields: [sixPillarId], references: [id])
+  taggedById   String
+  taggedBy     User               @relation(fields: [taggedById], references: [id])
+  taggedAt     DateTime           @default(now())
+
+  @@unique([entityType, entityId, sixPillarId])
+  @@index([orgId, entityType, entityId])
+}
+
+model Attachment {
+  id           String               @id @default(cuid())
+  orgId        String
+  organisation Organisation         @relation(fields: [orgId], references: [id])
+  entityType   AttachableEntityType
+  entityId     String
+  s3Key        String
+  fileName     String
+  mimeType     String
+  sizeBytes    Int
+  uploadedById String
+  uploadedBy   User                 @relation(fields: [uploadedById], references: [id])
+  uploadedAt   DateTime             @default(now())
+
+  @@index([orgId, entityType, entityId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// NEXTAUTH (Auth.js) ADAPTER MODELS
+// Framework-owned; not queried through the tenant-scoped data-access
+// layer. Tenant scoping is inherent via the userId -> User.orgId chain.
+// ═══════════════════════════════════════════════════════════════════════
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expires      DateTime
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════════════
+
+enum SubscriptionTier {
+  FREE
+  PAID
+}
+
+enum BillingStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+}
+
+enum UserRole {
+  OWNER
+  REGISTERED_MANAGER
+  STAFF
+  BNCL_ADMIN
+}
+
+enum UserStatus {
+  INVITED
+  ACTIVE
+  DISABLED
+}
+
+enum ModuleName {
+  DASHBOARD
+  AUDITS
+  INCIDENTS
+  EVENTS
+  RISK_REGISTER
+  POLICIES
+  FEEDBACK_COMPLAINTS
+  NOTICES
+  TRAINING
+  CALENDAR
+  EVIDENCE_PACKS
+  QG_HUB
+  READINESS_SCORER
+  ADMIN_USERS
+  ADMIN_SITES
+  ADMIN_BILLING
+  ADMIN_DATA_PROTECTION
+  BNCL_SUPER_ADMIN
+}
+
+enum CQCDomain {
+  SAFE
+  EFFECTIVE
+  CARING
+  RESPONSIVE
+  WELL_LED
+}
+
+enum SixPillarName {
+  QUALITY_SAFETY_OVERSIGHT
+  RISK_MANAGEMENT
+  INCIDENT_SAFETY_EVENT_MANAGEMENT
+  RECORDS_INFO_GOVERNANCE
+  WORKFORCE_GOVERNANCE
+  FEEDBACK_COMPLAINTS_LEARNING
+}
+
+enum AuditStatus {
+  SCHEDULED
+  OVERDUE
+  COMPLETED
+}
+
+enum IncidentSeverity {
+  NO_HARM
+  LOW
+  MODERATE
+  SEVERE
+  DEATH
+}
+
+enum IncidentStatus {
+  OPEN
+  INVESTIGATING
+  CLOSED
+}
+
+enum EventStatus {
+  OPEN
+  CLOSED
+}
+
+enum RiskStatus {
+  OPEN
+  MITIGATING
+  CLOSED
+  ACCEPTED
+}
+
+enum PolicyStatus {
+  ACTIVE
+  UNDER_REVIEW
+  SUPERSEDED
+}
+
+enum FeedbackSource {
+  PATIENT
+  STAFF
+}
+
+enum FeedbackStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+enum NoticeType {
+  INTERNAL_ANNOUNCEMENT
+  REGULATORY_UPDATE
+  POLICY_CHANGE_ALERT
+}
+
+enum NoticeAudience {
+  ALL_STAFF
+  MANAGERS_ONLY
+  SPECIFIC_SITE
+}
+
+enum QGContentType {
+  ARTICLE
+  LESSON
+}
+
+enum QGPublishStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum CalendarLinkedModule {
+  AUDIT
+  POLICY_REVIEW
+  TRAINING
+  EVENT
+  MANUAL
+}
+
+enum CalendarTaskStatus {
+  PENDING
+  DONE
+  OVERDUE
+}
+
+enum TrainingStatus {
+  VALID
+  EXPIRING_SOON
+  EXPIRED
+}
+
+// Entities that can be tagged against the Reg 17 / CQC / Six Pillar taxonomy.
+enum TaggableEntityType {
+  AUDIT
+  INCIDENT
+  EVENT
+  RISK_ENTRY
+  POLICY
+  FEEDBACK_COMPLAINT
+}
+
+// Entities that can carry file attachments (superset of TaggableEntityType).
+enum AttachableEntityType {
+  AUDIT
+  INCIDENT
+  EVENT
+  RISK_ENTRY
+  POLICY
+  FEEDBACK_COMPLAINT
+  TRAINING_RECORD
+  DATA_PROCESSING_AGREEMENT
+}
+
+// Entities covered by the immutable AuditLogEntry log.
+enum AuditableEntityType {
+  ORGANISATION
+  SITE
+  USER
+  AUDIT
+  INCIDENT
+  EVENT
+  RISK_ENTRY
+  POLICY
+  FEEDBACK_COMPLAINT
+  NOTICE
+  TRAINING_RECORD
+  CALENDAR_TASK
+  READINESS_SCORE
+  DATA_PROCESSING_AGREEMENT
+  QG_HUB_CONTENT
+  ROLE_PERMISSION
+}
+
+enum AuditLogAction {
+  CREATE
+  UPDATE
+  DELETE
+  APPROVE
+  RESTORE
+  EXPORT
+  LOGIN
+  LOGOUT
+  INVITE
+  ACKNOWLEDGE
+}
