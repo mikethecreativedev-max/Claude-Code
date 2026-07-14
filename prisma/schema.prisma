@@ -144,7 +144,14 @@ model User {
   orgId        String
   organisation Organisation @relation(fields: [orgId], references: [id])
   name         String
-  email        String
+  // Globally unique, not just per-org: NextAuth's PrismaAdapter resolves
+  // users by email alone (magic-link lookups, account linking), and login
+  // itself takes only an email (no org selector) — so email must be
+  // unambiguous across every tenant, not just within one.
+  email        String     @unique
+  // Required by NextAuth's PrismaAdapter for the Email (magic-link)
+  // provider — it stamps this when a magic-link token is redeemed.
+  emailVerified DateTime?
   passwordHash String?
   role         UserRole
   status       UserStatus   @default(INVITED)
@@ -172,7 +179,6 @@ model User {
   accounts Account[]
   sessions Session[]
 
-  @@unique([orgId, email])
   @@index([orgId])
   @@index([orgId, deletedAt])
 }
