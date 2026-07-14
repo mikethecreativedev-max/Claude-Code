@@ -417,7 +417,10 @@ $ psql bncl_dev_phase4b -c 'SELECT "entityType","entityId","fileName","mimeType"
 
 ### Post-merge verification (combined codebase)
 
-Re-run against the merged Phase 1+2+3+4+7 codebase before push — see "Post-merge verification output" at the end of this file for the actual combined test run, lint, and build output.
+Re-run against the merged Phase 1+2+3+4+5+7 codebase before push — see
+"Post-merge verification: full combined suite" near the end of this file
+for the actual combined test run, lint, and build output covering every
+merged phase at once.
 
 ---
 
@@ -585,15 +588,74 @@ GET /dashboard/notices, /dashboard/notices/[id], /dashboard/calendar, /dashboard
 
 ---
 
+## Post-merge verification: full combined suite
+
+Phases 2, 3, 4a, 4b, 5, and 7 were built in parallel, isolated git
+worktrees, then merged one at a time into `claude/bncl-compliance-setup`
+(resolving real conflicts along the way — see individual commit messages:
+a reconciled duplicate Q&G Hub write API between Phase 3/7, a reconciled
+duplicate user-invite mechanism between Phase 2/7, combined
+`check-tenant-isolation-imports.js` allowlists, a combined `prisma/seed.ts`,
+and a real cross-test-file flakiness bug found and fixed —
+`vitest.config.ts`'s `fileParallelism: false`, needed once multiple
+phases' test suites started sharing one Postgres database with
+global-count assertions). This section is the full verification of the
+result, run against a completely fresh database — not a re-statement of
+each phase's individual (still-true) verification above.
+
+```
+$ sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_dev;" && \
+  sudo -u postgres psql -c "CREATE DATABASE bncl_dev OWNER bncl;" && \
+  sudo -u postgres psql -c "DROP DATABASE IF EXISTS bncl_test;" && \
+  sudo -u postgres psql -c "CREATE DATABASE bncl_test OWNER bncl;"
+DROP DATABASE / CREATE DATABASE (x2)
+
+$ npx prisma migrate deploy    # bncl_dev
+Applying migration `20260714183643_init`
+All migrations have been successfully applied.
+
+$ npm run db:seed              # bncl_dev
+Seed complete: Org A (demo-org-a), Org B (demo-org-b), BNCL internal admin, both org owners.
+
+(same two commands repeated clean against bncl_test)
+
+$ DATABASE_URL=".../bncl_test" npx vitest run
+ ✓ tests/phase4a-audits-incidents.test.ts (26 tests)
+ ✓ tests/phase7-admin-billing.test.ts (38 tests)
+ ✓ tests/phase4b-risks-policies.test.ts (24 tests)
+ ✓ tests/phase2-onboarding-dashboard.test.ts (16 tests)
+ ✓ tests/phase5-supporting-modules.test.ts (12 tests)
+ ✓ tests/phase3-free-tier.test.ts (21 tests)
+ ✓ tests/tenant-isolation.test.ts (14 tests)
+ Test Files  7 passed (7)
+      Tests  151 passed (151)
+
+$ npm run check:tenant-isolation-imports
+OK: no unscoped raw-Prisma imports found outside the allowlist (10 allowlisted files).
+
+$ npm run lint
+✔ No ESLint warnings or errors
+
+$ npm run build
+✓ Compiled successfully
+✓ Linting and checking validity of types ...
+✓ Generating static pages (48/48)
+(48 routes total: every module's list/detail/new/edit pages, all /api/*
+route handlers, /bncl-admin + /bncl-admin/qg-hub, /login, /signup,
+/invite/accept — see full route table in the build output.)
+```
+
+---
+
 ## Standing rules that apply to every phase (not one-time items)
 
-- [ ] No raw `prisma.<tenantModel>` calls outside the scoped data-access layer and the BNCL super-admin module — checked every phase, not just Phase 1.
-- [ ] Every route handler / server action: auth check → org check → RBAC check, server-side, in that order — checked every phase.
-- [ ] Cross-tenant isolation tests must pass at the end of **every** phase, cumulative (not just the modules built in that phase).
-- [ ] TypeScript strict, no `any` in domain code.
-- [ ] Zod validation on every input boundary (forms and API).
-- [ ] No PII in logs.
-- [ ] README updated each phase: env vars, setup, architecture decisions, and the Events open item kept current.
+- [x] No raw `prisma.<tenantModel>` calls outside the scoped data-access layer and the BNCL super-admin module — checked every phase, not just Phase 1. Re-verified above against the fully merged codebase (10 allowlisted files, all justified with header comments explaining why each is not a tenant-isolation concern).
+- [x] Every route handler / server action: auth check → org check → RBAC check, server-side, in that order — checked every phase. Enforced via `requireAuth()`/`requireModulePermission()`/`requireModulePermissionWithTier()`/`requireBnclAdmin()` at every route/server-action entry point across all merged phases.
+- [x] Cross-tenant isolation tests must pass at the end of **every** phase, cumulative (not just the modules built in that phase). 151/151 tests passing above, spanning every module built through Phase 7.
+- [x] TypeScript strict, no `any` in domain code. `npm run build`'s type-check passes with zero errors; the only `any`-adjacent code is the documented, narrow `as never` escape hatch in `scoped-client.ts`'s generic dispatch (see that file's own comment) — not domain code.
+- [x] Zod validation on every input boundary (forms and API). Every server action/route handler across every merged phase parses input through a Zod schema before touching the database.
+- [x] No PII in logs. No `console.log`/error output in application code includes user-supplied PII; error messages are generic (`ForbiddenError`, `TierRequiredError`, etc.) and don't echo request bodies.
+- [x] README updated each phase: env vars, setup, architecture decisions, and the Events open item kept current. `README.md`'s Status section reflects all merged phases; the Events open item note is preserved and extended, not resolved.
 
 ## Known open item
 
