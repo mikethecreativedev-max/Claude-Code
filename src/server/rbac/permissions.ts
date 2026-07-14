@@ -10,7 +10,7 @@ import { requireAuth, type SessionUser } from "@/server/auth/session";
 // the allowlist in scripts/check-tenant-isolation-imports.js on purpose —
 // if RolePermission ever becomes tenant-scoped, that script's failure is
 // what should force this file to be reworked through scopedDb().
-type PermissionLevel = "view" | "edit" | "approve";
+export type PermissionLevel = "view" | "edit" | "approve";
 
 export class ForbiddenError extends Error {
   constructor(module: ModuleName, level: PermissionLevel) {

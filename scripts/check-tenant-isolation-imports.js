@@ -24,12 +24,27 @@ const SRC = path.join(ROOT, "src");
 //   table seeded once, identical across every org — it carries no orgId
 //   and is not in scoped-client.ts's TENANT_MODELS set, so it is not a
 //   tenant-isolation concern the same way business data is)
+// - the RBAC tier module (src/server/rbac/tier.ts) — it reads
+//   Organisation.subscriptionTier by the *session's own* orgId, which is
+//   not in scoped-client.ts's TENANT_MODELS set either (Organisation IS
+//   the tenant, not a child row scoped to one), and the lookup is never
+//   keyed on client-suppliable input. See BUILD_CHECKLIST.md Phase 3.
+// - the Q&G Hub content read module (src/server/content/qg-hub.ts) —
+//   QGHubContent carries no orgId at all (see prisma/schema.prisma): it is
+//   global reference content, identical for every tenant, managed only via
+//   the BNCL super-admin module. It is intentionally NOT in scoped-client.ts's
+//   TENANT_MODELS set, so reading it via rawPrisma is not a tenant-isolation
+//   concern. This file is read-only by design — all QGHubContent writes go
+//   through src/server/bncl-admin/client.ts (BNCL_ADMIN-gated). See
+//   BUILD_CHECKLIST.md Phase 3.
 const ALLOWLIST = [
   path.join(SRC, "server", "db", "prisma.ts"),
   path.join(SRC, "server", "db", "scoped-client.ts"),
   path.join(SRC, "server", "bncl-admin", "client.ts"),
   path.join(SRC, "server", "auth", "auth.ts"),
   path.join(SRC, "server", "rbac", "permissions.ts"),
+  path.join(SRC, "server", "rbac", "tier.ts"),
+  path.join(SRC, "server", "content", "qg-hub.ts"),
 ];
 
 const IMPORT_PATTERN = /from\s+["']@\/server\/db\/prisma["']/;

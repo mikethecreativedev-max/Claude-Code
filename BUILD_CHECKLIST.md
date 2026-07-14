@@ -184,21 +184,39 @@ GET /dashboard (same session) -> page content confirms "Signed in as owner@green
 
 ## Phase 3 — Free Tier
 
-- [ ] Q&G Hub: content list + detail pages, reading from `QGHubContent` (global, not tenant-scoped).
+- [x] Q&G Hub: content list + detail pages, reading from `QGHubContent` (global, not tenant-scoped).
   - Acceptance: content is manageable only via the BNCL super-admin module; a non-BNCL_ADMIN cannot create/edit/publish content even via direct API call.
-- [ ] Inspection Readiness Scorer: questionnaire → scored results by CQC domain.
+  - Verified: `src/server/bncl-admin/client.ts`'s `createQGHubContent`/`updateQGHubContent` call `assertBnclAdmin(session)` before any write; `src/server/content/qg-hub.ts` is a read-only module (published-only for non-admins, draft-visible for BNCL_ADMIN, drafts 404 rather than 403 for non-admins so existence isn't leaked). Proven by `tests/phase3-free-tier.test.ts` describe blocks "Q&G Hub: published-only reads for non-admins" and "(d) Q&G Hub: a non-BNCL_ADMIN cannot write QGHubContent" (includes a positive control that a real BNCL_ADMIN session succeeds, and a direct-DB check that a rejected create left no row behind).
+- [x] Inspection Readiness Scorer: questionnaire → scored results by CQC domain.
   - Acceptance: submitting the questionnaire creates a `ReadinessScore` row scoped to the submitting user's org/site; scoring logic is a pure, tested function.
-- [ ] Readiness history: score-over-time chart.
+  - Verified: `src/server/readiness/scoring.ts`'s `computeReadinessScore()` is a pure function (no I/O), unit-tested directly for all-Yes/all-No/mixed-known-answer cases (hand-computed expected scores), missing-answer-throws, and repeated-call determinism. `src/server/readiness/actions.ts`'s `submitReadinessQuestionnaire()` runs the mandatory auth → RBAC → Zod validation → pure scoring → `scopedDb(session.orgId)` write chain. Confirmed for real via curl smoke test below (real DB row, real computed score).
+- [x] Readiness history: score-over-time chart.
   - Acceptance: chart is populated from all `ReadinessScore` rows for the org ordered by `dateTaken`; an Org B session never sees Org A's history (tie back to cross-tenant test).
-- [ ] Free-tier gating: paid modules are inaccessible (server-side, not just hidden nav) to `FREE` tier orgs.
+  - Verified: `src/app/dashboard/readiness/history/page.tsx` queries `scopedDb(session.orgId).readinessScore.findMany({ orderBy: { dateTaken: "asc" } })` and renders an inline SVG line chart + table. `tests/phase3-free-tier.test.ts` describe block "(a) Readiness history: cross-tenant isolation" proves Org A/B separation at findMany, findUnique, and spoofed-where-clause levels. Confirmed live: after Org A's owner submitted the questionnaire via curl, Org B's owner session's `/dashboard/readiness/history` page still rendered "No readiness scores yet."
+- [x] Free-tier gating: paid modules are inaccessible (server-side, not just hidden nav) to `FREE` tier orgs.
   - Acceptance: a direct request to a paid-tier route/API from a FREE-tier session returns 403, verified by an automated test, not just observed by hiding the nav link.
+  - **Deviation, noted honestly**: no paid-tier module (AUDITS, INCIDENTS, etc. — Phase 4-7) has a route/API built yet in this phase, so there is no live paid-tier HTTP endpoint to send a request at. What Phase 3 delivers instead is the gating primitive those future phases are required to call: `src/server/rbac/tier.ts` exports `requireTier(session, tier)` (throws `TierRequiredError`, re-reads `Organisation.subscriptionTier` from the DB on every call — no JWT-staleness window) and `requireModulePermissionWithTier(module, level, tier = "PAID")`, which composes `requireModulePermission()` (RBAC) with `requireTier()` (subscription tier) — the standard entry point Phase 4+ route handlers/server actions must use for every non-free module. `requireTier()` is tested directly against the real seeded+migrated test DB (matching this codebase's existing pattern of testing session-taking pure functions directly rather than mocking a NextAuth request — see `assertBnclAdmin`'s tests in `tests/tenant-isolation.test.ts`): rejects a FREE-tier org's session with `TierRequiredError`, accepts PAID, never rejects when FREE is required, and a live tier flip (FREE → PAID → FREE via `rawPrisma.organisation.update`) takes effect on the very next call with no caching. `ForbiddenError`/`UnauthorizedError`→HTTP-status mapping is already established in `src/app/api/dashboard/readiness/route.ts`; `TierRequiredError` should map to 403 there the same way once a paid-tier route exists to map it in. Route-level 403 verification against a real paid module route will happen as part of that later phase's gate.
 
 ### Phase 3 gate
-- [ ] Migrations clean from scratch.
-- [ ] Seed works.
-- [ ] Cross-tenant isolation suite re-run and still passes (paste output).
-- [ ] Tier-gating test (FREE org blocked from paid routes) passes (paste output).
-- [ ] All Phase 3 pages render.
+- [x] Migrations clean from scratch. (`prisma migrate deploy` against freshly-created `bncl_dev_phase3` and `bncl_test_phase3` — 1 migration, `20260714183643_init`, applied cleanly to both.)
+- [x] Seed works. (`npm run db:seed` against both databases — 2 demo orgs, BNCL admin, 2 org owners.)
+- [x] Cross-tenant isolation suite re-run and still passes (paste output).
+  ```
+  ✓ tests/tenant-isolation.test.ts (14 tests) 337ms
+  ✓ tests/phase3-free-tier.test.ts (21 tests) 414ms
+  Test Files  2 passed (2)
+       Tests  35 passed (35)
+  ```
+- [x] Tier-gating test (FREE org blocked from paid routes) passes (paste output).
+  ```
+  ✓ (c) requireTier(): FREE-tier org session gets rejected, PAID-tier passes (4 tests)
+    ✓ rejects a FREE-tier org's session when PAID is required
+    ✓ accepts a PAID-tier org's session when PAID is required
+    ✓ never rejects when FREE is required, regardless of the org's actual tier
+    ✓ re-reads the tier fresh from the database (no staleness): a tier flip takes effect immediately
+  ```
+  (See "Deviation, noted honestly" above — no live paid-tier HTTP route exists yet to hit with curl; this is the gating primitive itself, DB-backed and real.)
+- [x] All Phase 3 pages render. Verified live against `PORT=3011 npm run dev`: `/dashboard/qg-hub` (200), `/dashboard/readiness` (200), `/dashboard/readiness/history` (200, renders submitted score after a real questionnaire submission), unauthenticated POST to `/api/dashboard/readiness` → 401.
 
 ---
 

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { rawPrisma } from "@/server/db/prisma";
 import { requireAuth, type SessionUser } from "@/server/auth/session";
 
@@ -56,4 +58,46 @@ export async function listOrgsForSuperAdmin() {
 export async function listQGHubContent() {
   await requireBnclAdmin();
   return rawPrisma.qGHubContent.findMany({ orderBy: { updatedAt: "desc" } });
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Q&G Hub content — the ONLY write path. The client-facing read side lives
+// in src/server/content/qg-hub.ts (published-only for non-admins). A
+// non-BNCL_ADMIN must never be able to create/edit/publish content, even
+// via a direct call to these functions — enforced below by assertBnclAdmin,
+// not by hiding a button in the UI. See BUILD_CHECKLIST.md Phase 3.
+// ─────────────────────────────────────────────────────────────────────────
+
+const qgHubContentInputSchema = z.object({
+  title: z.string().min(1),
+  category: z.string().min(1),
+  contentType: z.enum(["ARTICLE", "LESSON"]),
+  publishStatus: z.enum(["DRAFT", "PUBLISHED"]).default("DRAFT"),
+  body: z.string().optional(),
+});
+
+export type QGHubContentInput = z.infer<typeof qgHubContentInputSchema>;
+
+/**
+ * Create Q&G Hub content. Takes `session` explicitly (rather than calling
+ * requireBnclAdmin() internally, which would pull from the live NextAuth
+ * request context) so the RBAC gate is directly unit-testable without
+ * mocking a request — see tests/phase3-free-tier.test.ts, and the same
+ * pattern as assertBnclAdmin() above.
+ */
+export async function createQGHubContent(session: SessionUser, input: QGHubContentInput) {
+  assertBnclAdmin(session);
+  const data = qgHubContentInputSchema.parse(input);
+  return rawPrisma.qGHubContent.create({ data });
+}
+
+/** Update (including publish/unpublish) Q&G Hub content. BNCL_ADMIN only. */
+export async function updateQGHubContent(
+  session: SessionUser,
+  id: string,
+  input: Partial<QGHubContentInput>
+) {
+  assertBnclAdmin(session);
+  const data = qgHubContentInputSchema.partial().parse(input);
+  return rawPrisma.qGHubContent.update({ where: { id }, data });
 }
