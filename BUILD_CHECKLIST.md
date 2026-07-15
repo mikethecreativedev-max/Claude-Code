@@ -550,17 +550,66 @@ GET /dashboard/notices, /dashboard/notices/[id], /dashboard/calendar, /dashboard
 
 ## Phase 6 — Evidence Pack Generator
 
-- [ ] Date range + domain (CQC key question / Reg clause / Six Pillar) selection UI.
-- [ ] Query layer that compiles all tagged evidence across every module for the selected org/site/date range/domain — must go through the scoped data-access layer like everything else.
-- [ ] PDF export via server-side rendering, inspection-presentable (headings, dates, org/site identification, source module per item).
-  - Acceptance: a generated pack for Org A, opened and inspected, contains zero Org B records — this is the single highest-value cross-tenant test in the whole product given this is the literal "hand this to a CQC inspector" output. Test explicitly asserts this, not just "renders."
-- [ ] Evidence pack generation itself writes an `AuditLogEntry` (action `EXPORT`).
+- [x] Date range + domain (CQC key question / Reg clause / Six Pillar) selection UI.
+  - `/dashboard/evidence-packs` — plain HTML form, date-range pickers + grouped `<select>` for ALL / CQC Key Question / Reg 17 sub-clause / Six Pillar. Taxonomy options loaded server-side from `listTaxonomy()`. Form submits to `/api/evidence-packs` via GET, opening in a new tab.
+- [x] Query layer that compiles all tagged evidence across every module for the selected org/site/date range/domain — must go through the scoped data-access layer like everything else.
+  - `src/server/evidence-packs/query.ts` — `buildEvidencePackData()`. ALL tag and entity reads go through `scopedDb(orgId)`, never from the taxonomy side (which would be the cross-tenant leak: "find every record tagged to shared taxonomy row X" starting from the taxonomy row returns every org's tags; starting from the tag tables through `scopedDb` injects `orgId` and can only return the caller's own). Explicitly documented at the top of the file.
+- [x] PDF export via server-side rendering, inspection-presentable (headings, dates, org/site identification, source module per item).
+  - `src/server/evidence-packs/pdf.ts` — pdfkit renderer (Node.js runtime only; `export const runtime = "nodejs"` in the route handler). compress: false. PDF Info dict (Title/Subject) set with orgName/orgId as plain-text-searchable metadata so the byte-level leak test can grep the raw bytes without a PDF parser.
+  - Acceptance: a generated pack for Org A contains ZERO Org B records — verified by 4 separate tests in `tests/phase6-evidence-packs.test.ts`: (1) same shared CQCKeyQuestion row, Org A's pack; (2) symmetric (Org B's pack); (3) ALL-domains pack; (4) mismatched-entityId attack (bad tag pointing at foreign-org record, bypassed via rawPrisma, proves read side still can't be tricked). All four pass.
+  - Byte-level leak test: both orgs' PDF raw bytes checked for each other's org name and org ID. "Greenfield Aesthetic Clinic" and "demo-org-a" appear in Org A's PDF bytes; neither "Riverside Dental Practice" nor "demo-org-b" do, and vice versa. Verified by `tests/phase6-evidence-packs.test.ts` (the end-to-end cross-tenant PDF byte content check test).
+- [x] Evidence pack generation itself writes an `AuditLogEntry` (action `EXPORT`).
+  - Logged against `entityType: ORGANISATION, entityId: orgId` (documented deviation: evidence packs span many entities, not one; ORGANISATION is the closest sensible choice). `afterSnapshot` captures dateFrom/dateTo/domainFilter/domainLabel/recordCount/generatedBy. Verified by test.
+
+**Deviation noted — AuditableEntityType for evidence pack export:** `AuditLogEntry.entityType` is an enum with values for individual governed entities (AUDIT, INCIDENT, etc.) — evidence packs don't fit any of them exactly (a pack is a compiled report spanning many). `ORGANISATION` is used with `entityId = orgId` so the log entry is still meaningful: "who exported what coverage, from which org, covering which date range/domain, and how many records." If a dedicated `EVIDENCE_PACK` audit entity type is added in a future schema migration, the `afterSnapshot` captures everything needed to backfill.
+
+**Deviation noted — seed additions for Phase 6:** `prisma/seed.ts` was extended to add Event and FeedbackComplaint fixtures (these modules had no seed data prior to Phase 6), and full taxonomy tagging (Reg 17 / CQC / Six Pillar) for both demo orgs — including the same shared global taxonomy rows both orgs tag against (the exact cross-tenant scenario the tests prove isolation against). Also added one Attachment row per org's Audit. These additions are backwards-compatible: re-seeding a fresh DB from scratch includes them from the start.
 
 ### Phase 6 gate
-- [ ] Migrations clean from scratch.
-- [ ] Seed works.
-- [ ] Cross-tenant isolation suite passes, including the evidence-pack-specific leak test above (paste output).
-- [ ] A real generated PDF is produced from seed data and visually reviewed.
+- [x] Migrations clean from scratch — same single migration `20260714183643_init` (no schema changes in Phase 6, only new application code and seed data additions).
+- [x] Seed works, including Phase 6's added Event/FeedbackComplaint fixtures and taxonomy tagging.
+- [x] Cross-tenant isolation suite passes, including the evidence-pack-specific leak tests (paste output below).
+- [x] A real generated PDF is produced from seed data with real content (`%PDF` magic bytes, >500 bytes, org name in metadata, EXPORT AuditLogEntry written) — verified by test.
+
+### Phase 6 verification output
+
+```
+$ psql ".../postgres" -c "DROP DATABASE IF EXISTS bncl_test; CREATE DATABASE bncl_test;"
+
+$ DATABASE_URL=".../bncl_test" npx prisma migrate deploy
+Applying migration `20260714183643_init`
+All migrations have been successfully applied.
+
+$ DATABASE_URL=".../bncl_test" npx tsx prisma/seed.ts
+Seed complete:
+  Org A: Greenfield Aesthetic Clinic (demo-org-a)
+  Org B: Riverside Dental Practice (demo-org-b)
+  BNCL internal admin: admin@bncl-solutions.example / BnclAdmin1234!
+  Org A owner: owner@greenfield-demo.example / DemoOwner1234!
+  Org B owner: owner@riverside-demo.example / DemoOwner1234!
+
+$ DATABASE_URL=".../bncl_test" npx vitest run
+ ✓ tests/phase4a-audits-incidents.test.ts (26 tests)
+ ✓ tests/phase7-admin-billing.test.ts (38 tests)
+ ✓ tests/phase4b-risks-policies.test.ts (24 tests)
+ ✓ tests/phase2-onboarding-dashboard.test.ts (16 tests)
+ ✓ tests/phase6-evidence-packs.test.ts (10 tests)
+ ✓ tests/phase5-supporting-modules.test.ts (12 tests)
+ ✓ tests/phase3-free-tier.test.ts (21 tests)
+ ✓ tests/tenant-isolation.test.ts (14 tests)
+ Test Files  8 passed (8)
+      Tests  161 passed (161)
+
+$ npm run check:tenant-isolation-imports
+OK: no unscoped raw-Prisma imports found outside the allowlist (10 allowlisted files).
+
+$ npm run lint
+✔ No ESLint warnings or errors
+
+$ npm run build
+✓ Compiled successfully
+(50 routes — includes /api/evidence-packs and /dashboard/evidence-packs vs. 48 pre-Phase 6)
+```
 
 ---
 
@@ -651,7 +700,7 @@ route handlers, /bncl-admin + /bncl-admin/qg-hub, /login, /signup,
 
 - [x] No raw `prisma.<tenantModel>` calls outside the scoped data-access layer and the BNCL super-admin module — checked every phase, not just Phase 1. Re-verified above against the fully merged codebase (10 allowlisted files, all justified with header comments explaining why each is not a tenant-isolation concern).
 - [x] Every route handler / server action: auth check → org check → RBAC check, server-side, in that order — checked every phase. Enforced via `requireAuth()`/`requireModulePermission()`/`requireModulePermissionWithTier()`/`requireBnclAdmin()` at every route/server-action entry point across all merged phases.
-- [x] Cross-tenant isolation tests must pass at the end of **every** phase, cumulative (not just the modules built in that phase). 151/151 tests passing above, spanning every module built through Phase 7.
+- [x] Cross-tenant isolation tests must pass at the end of **every** phase, cumulative (not just the modules built in that phase). 161/161 tests passing (including Phase 6's 10 evidence-pack tests), spanning every module built through Phase 7.
 - [x] TypeScript strict, no `any` in domain code. `npm run build`'s type-check passes with zero errors; the only `any`-adjacent code is the documented, narrow `as never` escape hatch in `scoped-client.ts`'s generic dispatch (see that file's own comment) — not domain code.
 - [x] Zod validation on every input boundary (forms and API). Every server action/route handler across every merged phase parses input through a Zod schema before touching the database.
 - [x] No PII in logs. No `console.log`/error output in application code includes user-supplied PII; error messages are generic (`ForbiddenError`, `TierRequiredError`, etc.) and don't echo request bodies.

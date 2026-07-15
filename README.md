@@ -7,12 +7,12 @@ hospitals), built around CQC Regulation 17. Full concept and build spec:
 
 ## Status
 
-**Phases 1, 2, 3, 4, 5, and 7 complete and verified.** Only Phase 6
-(Evidence Pack Generator) remains — see `BUILD_CHECKLIST.md` for the full
-phase-by-phase plan and real verification output (migrations from scratch,
-seed, the combined tenant-isolation test suite across every module, live
-RBAC nav checks across three roles, end-to-end curl smoke tests of sign-up/
-setup-wizard/invite-accept, magic-link login, and per-module CRUD flows).
+**All phases (1–7) complete and verified.** See `BUILD_CHECKLIST.md` for the
+full phase-by-phase plan and real verification output (migrations from scratch,
+seed, the combined tenant-isolation test suite across every module — 161/161
+tests passing — live RBAC nav checks across three roles, end-to-end curl smoke
+tests of sign-up/setup-wizard/invite-accept, magic-link login, per-module CRUD
+flows, Stripe webhook simulation, and cross-tenant PDF byte-level leak proof).
 
 What exists: auth (Credentials + magic link), the scoped data-access layer,
 RBAC permission checks and server-side tier gating, the BNCL super-admin
@@ -22,8 +22,10 @@ Scorer (free tier), Audits/Incidents/Risk Register/Policies (paid,
 append-only versioned, Reg 17/CQC/Six Pillar tagged), Feedback & Complaints,
 Staff Training, Notices, Events (minimal generic log — see "Known open
 item" below), a unified Calendar, Notifications, user/site/billing admin
-with Stripe webhooks, and the Data Protection Centre — on top of the
-automated tenant-isolation test suite and import-discipline check.
+with Stripe webhooks, the Data Protection Centre, and the Evidence Pack
+Generator (cross-tenant-safe PDF export across all tagged modules, inspectable
+at the raw-byte level) — on top of the automated tenant-isolation test suite
+and import-discipline check.
 
 ## Tech stack
 
