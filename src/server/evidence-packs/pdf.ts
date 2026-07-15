@@ -27,15 +27,27 @@ function formatBytes(n: number): string {
  */
 export function renderEvidencePackPdf(data: EvidencePackData): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    // compress: false is deliberate, not an oversight — this is a
-    // compliance/inspection document, and keeping content streams
-    // uncompressed means the cross-tenant leak test (both the automated
-    // suite and the live curl smoke test in BUILD_CHECKLIST.md) can grep
-    // the raw PDF bytes directly for a foreign org's identifiers/titles,
-    // rather than only trusting the EvidencePackData structure that fed
-    // this renderer. That end-to-end, byte-level check is the highest-
-    // value test in this phase.
-    const doc = new PDFDocument({ size: "A4", margin: 50, bufferPages: true, compress: false });
+    // compress: false keeps content streams uncompressed.
+    // The Info dict (Title/Subject) is written as plain literal strings
+    // — not hex-encoded like content stream text — so automated tests
+    // can grep the raw PDF bytes for orgId/orgName to verify cross-tenant
+    // isolation end-to-end at the byte level without needing a PDF parser.
+    const doc = new PDFDocument({
+      size: "A4",
+      margin: 50,
+      bufferPages: true,
+      compress: false,
+      info: {
+        // ASCII-only fields: pdfkit writes these as plain literal strings
+        // in the PDF Info dict, searchable in raw bytes. A non-ASCII char
+        // (e.g. an em-dash) in the value would trigger UTF-16 encoding
+        // for the whole string, defeating the byte-level leak test.
+        Title: data.orgName,
+        Subject: data.orgId,
+        Author: data.generatedByLabel,
+        Creator: "BNCL Compliance Platform",
+      },
+    });
     const chunks: Buffer[] = [];
     doc.on("data", (chunk: Buffer) => chunks.push(chunk));
     doc.on("end", () => resolve(Buffer.concat(chunks)));
