@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bncl
+          POSTGRES_PASSWORD: bncl_dev_password
+          POSTGRES_DB: bncl_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Run database migrations
+        env:
+          DATABASE_URL: postgresql://bncl:bncl_dev_password@localhost:5432/bncl_test?schema=public
+        run: npx prisma migrate deploy
+
+      - name: Seed database
+        env:
+          DATABASE_URL: postgresql://bncl:bncl_dev_password@localhost:5432/bncl_test?schema=public
+        run: npx tsx prisma/seed.ts
+
+      - name: Check tenant isolation imports
+        run: npm run check:tenant-isolation-imports
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        env:
+          DATABASE_URL: postgresql://bncl:bncl_dev_password@localhost:5432/bncl_test?schema=public
+          NEXTAUTH_SECRET: ci-nextauth-secret-not-real
+          NEXTAUTH_URL: http://localhost:3000
+          STRIPE_SECRET_KEY: sk_test_placeholder
+          STRIPE_WEBHOOK_SECRET: whsec_placeholder
+        run: npm run build
+
+      - name: Test
+        env:
+          DATABASE_URL: postgresql://bncl:bncl_dev_password@localhost:5432/bncl_test?schema=public
+        run: npm test
