@@ -1,0 +1,11 @@
+{
+  "regions": ["lhr1"],
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "functions": {
+    "src/app/api/evidence-packs/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}
