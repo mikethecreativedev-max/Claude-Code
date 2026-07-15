@@ -313,6 +313,149 @@ async function seedDemoOrg(opts: {
     },
   });
 
+  // Event and FeedbackComplaint fixtures — these two modules had no seed
+  // records at all prior to Phase 6 (only Audit/Incident/RiskEntry/Policy
+  // were seeded). Added here (a Phase 6 deviation, documented in
+  // BUILD_CHECKLIST.md) so the Evidence Pack Generator's "across ALL
+  // tagged modules" query has real cross-module data for every one of the
+  // six TaggableEntityType values, not just four of them.
+  const event = await prisma.event.upsert({
+    where: { id: `${opts.id}-event-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-event-1`,
+      orgId: org.id,
+      siteId: site.id,
+      eventType: "CQC notification",
+      title: "Notified CQC of change to registered manager",
+      description: "Statutory notification submitted following change of registered manager.",
+      dateTime: new Date(),
+      status: "CLOSED",
+    },
+  });
+
+  const feedback = await prisma.feedbackComplaint.upsert({
+    where: { id: `${opts.id}-feedback-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-feedback-1`,
+      orgId: org.id,
+      siteId: site.id,
+      source: "PATIENT",
+      category: "Communication",
+      description: "Patient feedback: appointment reminder arrived too close to the appointment time.",
+      outcome: "Reminder lead time extended from 24h to 48h.",
+      status: "RESOLVED",
+    },
+  });
+
+  // Reg 17 / CQC / Six Pillar tagging fixtures — required by
+  // BUILD_CHECKLIST.md Phase 6 (tagging was added to the schema in
+  // Phase 4, built in parallel, so it was never seeded until now). A few
+  // tags per org, spanning different domains and different modules, so
+  // the Evidence Pack Generator has real cross-module data to pull from
+  // and the cross-tenant leak test has real fixtures (both orgs tag
+  // against the SAME shared global taxonomy rows) to prove isolation
+  // against.
+  const cqcSafe = await prisma.cQCKeyQuestion.findUniqueOrThrow({ where: { name: "SAFE" } });
+  const cqcWellLed = await prisma.cQCKeyQuestion.findUniqueOrThrow({ where: { name: "WELL_LED" } });
+  const cqcResponsive = await prisma.cQCKeyQuestion.findUniqueOrThrow({ where: { name: "RESPONSIVE" } });
+  const sixPillarQuality = await prisma.sixPillar.findUniqueOrThrow({ where: { name: "QUALITY_SAFETY_OVERSIGHT" } });
+  const sixPillarRisk = await prisma.sixPillar.findUniqueOrThrow({ where: { name: "RISK_MANAGEMENT" } });
+  const sixPillarFeedback = await prisma.sixPillar.findUniqueOrThrow({ where: { name: "FEEDBACK_COMPLAINTS_LEARNING" } });
+  const reg17_2a = await prisma.regulatorySubClause.findUniqueOrThrow({
+    where: { regulation_subParagraph: { regulation: "Reg 17", subParagraph: "17(2)(a)" } },
+  });
+  const reg17_2b = await prisma.regulatorySubClause.findUniqueOrThrow({
+    where: { regulation_subParagraph: { regulation: "Reg 17", subParagraph: "17(2)(b)" } },
+  });
+  const reg17_1 = await prisma.regulatorySubClause.findUniqueOrThrow({
+    where: { regulation_subParagraph: { regulation: "Reg 17", subParagraph: "17(1)" } },
+  });
+
+  type TagFixture =
+    | { kind: "REG"; entityType: "AUDIT" | "INCIDENT" | "EVENT" | "RISK_ENTRY" | "POLICY" | "FEEDBACK_COMPLAINT"; entityId: string; regSubClauseId: string; idSuffix: string }
+    | { kind: "CQC"; entityType: "AUDIT" | "INCIDENT" | "EVENT" | "RISK_ENTRY" | "POLICY" | "FEEDBACK_COMPLAINT"; entityId: string; cqcKeyQuestionId: string; idSuffix: string }
+    | { kind: "SIX"; entityType: "AUDIT" | "INCIDENT" | "EVENT" | "RISK_ENTRY" | "POLICY" | "FEEDBACK_COMPLAINT"; entityId: string; sixPillarId: string; idSuffix: string };
+
+  const tagFixtures: TagFixture[] = [
+    { kind: "CQC", entityType: "AUDIT", entityId: audit.id, cqcKeyQuestionId: cqcSafe.id, idSuffix: "audit-cqc-safe" },
+    { kind: "SIX", entityType: "AUDIT", entityId: audit.id, sixPillarId: sixPillarQuality.id, idSuffix: "audit-six-quality" },
+    { kind: "CQC", entityType: "INCIDENT", entityId: incident.id, cqcKeyQuestionId: cqcSafe.id, idSuffix: "incident-cqc-safe" },
+    { kind: "REG", entityType: "INCIDENT", entityId: incident.id, regSubClauseId: reg17_2b.id, idSuffix: "incident-reg-17-2b" },
+    { kind: "SIX", entityType: "RISK_ENTRY", entityId: riskEntry.id, sixPillarId: sixPillarRisk.id, idSuffix: "risk-six-risk" },
+    { kind: "REG", entityType: "RISK_ENTRY", entityId: riskEntry.id, regSubClauseId: reg17_2b.id, idSuffix: "risk-reg-17-2b" },
+    { kind: "REG", entityType: "POLICY", entityId: policy.id, regSubClauseId: reg17_1.id, idSuffix: "policy-reg-17-1" },
+    { kind: "CQC", entityType: "POLICY", entityId: policy.id, cqcKeyQuestionId: cqcWellLed.id, idSuffix: "policy-cqc-well-led" },
+    { kind: "REG", entityType: "EVENT", entityId: event.id, regSubClauseId: reg17_2a.id, idSuffix: "event-reg-17-2a" },
+    { kind: "CQC", entityType: "FEEDBACK_COMPLAINT", entityId: feedback.id, cqcKeyQuestionId: cqcResponsive.id, idSuffix: "feedback-cqc-responsive" },
+    { kind: "SIX", entityType: "FEEDBACK_COMPLAINT", entityId: feedback.id, sixPillarId: sixPillarFeedback.id, idSuffix: "feedback-six-feedback" },
+  ];
+
+  for (const fixture of tagFixtures) {
+    const id = `${opts.id}-tag-${fixture.idSuffix}`;
+    if (fixture.kind === "REG") {
+      await prisma.regClauseTag.upsert({
+        where: { id },
+        update: {},
+        create: {
+          id,
+          orgId: org.id,
+          entityType: fixture.entityType,
+          entityId: fixture.entityId,
+          regSubClauseId: fixture.regSubClauseId,
+          taggedById: manager.id,
+        },
+      });
+    } else if (fixture.kind === "CQC") {
+      await prisma.cQCKeyQuestionTag.upsert({
+        where: { id },
+        update: {},
+        create: {
+          id,
+          orgId: org.id,
+          entityType: fixture.entityType,
+          entityId: fixture.entityId,
+          cqcKeyQuestionId: fixture.cqcKeyQuestionId,
+          taggedById: manager.id,
+        },
+      });
+    } else {
+      await prisma.sixPillarTag.upsert({
+        where: { id },
+        update: {},
+        create: {
+          id,
+          orgId: org.id,
+          entityType: fixture.entityType,
+          entityId: fixture.entityId,
+          sixPillarId: fixture.sixPillarId,
+          taggedById: manager.id,
+        },
+      });
+    }
+  }
+
+  // One real Attachment row (metadata-only, matching the local-disk-stub
+  // pattern the rest of the codebase uses — see src/server/storage/
+  // local-upload.ts) so the evidence pack's "Attachments" line for at
+  // least one record is real, not always empty.
+  await prisma.attachment.upsert({
+    where: { id: `${opts.id}-attachment-1` },
+    update: {},
+    create: {
+      id: `${opts.id}-attachment-1`,
+      orgId: org.id,
+      entityType: "AUDIT",
+      entityId: audit.id,
+      s3Key: `${opts.id}/AUDIT/${audit.id}/infection-control-checklist.pdf`,
+      fileName: "infection-control-checklist.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 48213,
+      uploadedById: manager.id,
+    },
+  });
+
   // A handful of AuditLogEntry rows so the Phase 2 dashboard's recent
   // activity feed has something real to show for the seeded demo orgs
   // (not just brand-new sign-ups). Mirrors the shape scopedDb() itself
